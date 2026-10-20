@@ -4,7 +4,15 @@
 # 这个 bundle 只做两件事：
 #   1. 在 DSH 设置左侧导航里加一页「QQ 桥接」（client 半，client.js 注册
 #      `settings.section`，写法与 dsh-bili-scroll 相同）；
-#   2. 在 host 进程里注册同源路由 `/qq-bridge-panel/{status,start,stop,open}`，
+#   2. 在 host 进程里注册同源路由：
+#        GET  /qq-bridge-panel/status          真实健康检查聚合（桥接/LLBot/QQ 登录/DSH）
+#        POST /qq-bridge-panel/ping            client 加载自检
+#        POST /qq-bridge-panel/start|stop|restart  单个服务（只动面板能验证归属的进程）
+#        POST /qq-bridge-panel/start-all       一键启动编排（幂等、超时明确、部分成功如实报）
+#        POST /qq-bridge-panel/open            用系统浏览器打开控制台（一次性票据）/ LLBot WebUI
+#        POST /qq-bridge-panel/mode            运行模式（优先写桥接 /api/mode，回读校验）
+#        POST /qq-bridge-panel/model           QQ 专用模型（写桥接 config.json，作用域仅 QQ）
+#        POST /qq-bridge-panel/model/apply     会话局部应用模型（给桥接进程调用，不写全局默认）
 #      由 host 半读取桥接的 config.json、探测端口、spawn 子进程，并用系统默认
 #      浏览器打开控制台 / LLBot WebUI。
 #

@@ -557,23 +557,104 @@ function forgetAgentToken(key) {
   CONVERSATION_TOKENS.delete(key);
 }
 
+// ── 控制台一次性访问票据 / 会话 Cookie ───────────────────────────────────────
+// 为什么需要：面板要从 host 半「用系统浏览器打开控制台」，如果把长期 consoleToken
+// 拼进 URL（`/?token=...`），它会进入浏览器历史、可能出现在 Referer、也会被截图/录屏
+// 带走。现在改成：面板先用自己的凭证换一张 **60 秒、一次性** 的票据，浏览器只见到
+// 票据（`/auth/ticket?t=...`）；票据被消费后换成 **HttpOnly 会话 Cookie**（8 小时）。
+// Cookie 只活在内存里：桥接重启后失效，需要重新从面板打开（比长期令牌更安全）。
+const CONSOLE_TICKET_TTL_MS = 60 * 1000;
+const CONSOLE_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const CONSOLE_COOKIE_NAME = 'qq-console-session';
+const consoleTickets = new Map(); // ticket -> expiresAt
+const consoleSessions = new Map(); // sha256(sessionId) -> expiresAt
+const sha256Hex = (value) => crypto.createHash('sha256').update(String(value)).digest('hex');
+function pruneConsoleAuth(now = Date.now()) {
+  for (const [key, expiresAt] of consoleTickets) if (expiresAt <= now) consoleTickets.delete(key);
+  for (const [key, expiresAt] of consoleSessions) if (expiresAt <= now) consoleSessions.delete(key);
+}
+/** 请求是否带了一个未过期的控制台会话 Cookie（= 由一次性票据换来的）。 */
+function consoleCookieSessionOk(req) {
+  const raw = String(req.headers.cookie ?? '');
+  const match = raw.match(new RegExp(`(?:^|;\\s*)${CONSOLE_COOKIE_NAME}=([A-Za-z0-9_-]{20,})`));
+  if (!match) return false;
+  pruneConsoleAuth();
+  return consoleSessions.has(sha256Hex(match[1]));
+}
+
 // 读取 DSH 模型能力的在途 Promise：withTimeout 只做 Promise.race，不会取消底层 RPC，
 // 因此并发刷新会各自留下一个不可取消的请求。这里做去重，同一时刻只发一个。
 let modelCatalogInFlight = null;
+
 // DSH 思考强度（reasoningEffort）热切换代号。
 // 控制台改强度后递增它，让已在运行的会话在下一条消息重新 selectModel；
 // 放在模块级是为了不依赖 main() 内部声明的执行顺序（避免 TDZ）。
 let modelSelectionEpoch = 0;
-// DeepSeek provider 明确支持的取值（见 dsh-llm-deepseek：其它值会抛 UNSUPPORTED_REASONING_EFFORT）。
-// 'off' 虽然合法（关闭思考），但 QQ 聊天助手依赖思考，控制台不提供该档。
-const REASONING_EFFORT_OPTIONS = ['low', 'high', 'max'];
+// 思考强度档位：**由模型目录（session/modelCatalog）决定**，不再硬编码。
+//
+// 历史：这里写死 ['low','high','max']（DeepSeek 官方适配器的取值）。但 0.2.0 里
+// `model.reasoning.efforts[].id` 是**适配器自定义字符串**：核心 deepseek 是
+// off/low/high/max，本机 amd-qq 路由是 disabled/low/high/max，gpt-oss 还有 medium。
+// 硬编码会把 disabled / medium 这类真实档位过滤掉，控制台就少一档，模型选择时也无法
+// 判断「新模型是否支持旧档位」。现在拆成两层：
+//   · normalizeReasoningEffort —— 只做**形状**校验（配置读写路径用，不依赖目录）；
+//   · validateEffortForModel   —— 对着目录做**能力**校验（真正提交给模型前必须过）。
+const REASONING_EFFORT_FALLBACKS = ['low', 'high', 'max'];
 const REASONING_EFFORT_DEFAULT = 'max';
+const EFFORT_ID_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 function normalizeReasoningEffort(value) {
   const v = String(value ?? '').trim().toLowerCase();
-  if (!REASONING_EFFORT_OPTIONS.includes(v)) {
-    throw new Error(`思考强度只能是 ${REASONING_EFFORT_OPTIONS.join(' / ')}`);
+  if (!EFFORT_ID_RE.test(v)) {
+    throw new Error(`思考强度格式非法（应为小写字母开头的短标识，例如 low / high / max）：${JSON.stringify(String(value ?? ''))}`);
   }
   return v;
+}
+
+/**
+ * 读某个模型在目录里公布的 reasoning 能力。
+ * @param {object|null} catalog - session/modelCatalog 的返回值
+ * @param {string} provider - provider id
+ * @param {string} model - model id
+ * @returns {{supported: boolean, efforts: Array<{id:string,name:string,description:string}>, defaultEffort: string|null}|null}
+ *   null = 目录里找不到这个模型（无法确认能力）。
+ */
+function reasoningCapabilityOf(catalog, provider, model) {
+  const group = (catalog?.groups ?? []).find((g) => g?.id === provider);
+  const entry = (group?.models ?? []).find((m) => m?.id === model);
+  if (!entry) return null;
+  const reasoning = entry.reasoning;
+  const efforts = Array.isArray(reasoning?.efforts)
+    ? reasoning.efforts
+      .map((e) => ({ id: String(e?.id ?? ''), name: String(e?.name ?? e?.id ?? ''), description: String(e?.description ?? '') }))
+      .filter((e) => EFFORT_ID_RE.test(e.id))
+    : [];
+  return {
+    supported: efforts.length > 0,
+    efforts,
+    defaultEffort: reasoning?.defaultEffort != null ? String(reasoning.defaultEffort) : null
+  };
+}
+
+/**
+ * 校验「这个思考强度是否被这个模型支持」。目录不可用时返回 `{checked:false}`，
+ * 只有形状校验 —— 调用方必须把 checked=false 如实告诉 UI（不能假装确认过）。
+ * @returns {{checked: boolean, ok: boolean, message: string, capability: object|null}}
+ */
+function validateEffortForModel(catalog, provider, model, effort) {
+  const normalized = effort === undefined || effort === null || effort === '' ? '' : normalizeReasoningEffort(effort);
+  if (!normalized) return { checked: true, ok: true, message: '', capability: reasoningCapabilityOf(catalog, provider, model) };
+  const capability = reasoningCapabilityOf(catalog, provider, model);
+  if (capability === null) return { checked: false, ok: true, message: '目录里没有这个模型，思考强度能力未确认', capability: null };
+  if (!capability.supported) return { checked: true, ok: false, message: `模型 ${provider}/${model} 不支持可配置的思考强度`, capability };
+  if (!capability.efforts.some((e) => e.id === normalized)) {
+    return {
+      checked: true,
+      ok: false,
+      message: `模型 ${provider}/${model} 不支持思考强度「${normalized}」（支持：${capability.efforts.map((e) => e.id).join(' / ')}）`,
+      capability
+    };
+  }
+  return { checked: true, ok: true, message: '', capability };
 }
 
 // 敏感文本脱敏：把 SENSITIVE_RE 命中的片段替换为 ***，供日志/反馈/活动记录写入前使用。
@@ -1339,6 +1420,16 @@ let stateDirHardened = null;
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 async function main() {
   const cfg = loadConfig();
+
+  // ── QQ 模型作用域 ──────────────────────────────────────────────────────────
+  // 'session'（默认）：QQ 会话用**会话局部**方式应用模型（面板 host 半的
+  //   /qq-bridge-panel/model/apply），不写 DSH 全局默认模型。
+  // 'global'（显式 opt-in，旧行为）：调 session/selectModel —— 它除了设置本会话，
+  //   还会 fire-and-forget 地保存 DSH 全局默认模型（~/.dsh/profiles/<p>/cordis.patch.yml
+  //   的 agent-default-model）。只有用户明确接受这个副作用时才允许。
+  // 任何未知值一律按 'session' 处理（失败关闭到安全的一侧）。
+  const modelScope = () => (String(cfg.dsh?.modelScope ?? '').trim().toLowerCase() === 'global' ? 'global' : 'session');
+
   fs.mkdirSync(STATE_DIR, { recursive: true });
   hardenStateDirAcl();
   acquireLock();
@@ -3200,6 +3291,9 @@ async function main() {
   const SNOWLUMA_STATUS_POLL_MS = 60_000;
   const SNOWLUMA_SILENCE_WARN_MS = Math.max(60_000, Number(cfg.snowluma?.silenceWarnMs) || 10 * 60_000);
   const snowlumaHealth = {
+    // 必须显式初始化：早期版本漏了这个键，于是 JSON.stringify 把 `connected: undefined`
+    // 直接省略，面板/控制台只能拿到「字段不存在」，无法区分「未连接」与「老版本没上报」。
+    connected: false,
     lastPacketAt: 0,      // 最近一个来自 SnowLuma 的事件包（含 meta/心跳）
     lastPacketKind: '',
     accountOnline: null,  // bot_status 的 online/offline（需要较新的 SnowLuma 运行时）
@@ -3469,7 +3563,33 @@ async function main() {
         sendJson({ ok: false, error: `Host 头不被允许（${hostHeader || '缺失'}）：控制台只接受本机回环访问` }, 403);
         return;
       }
-      // 控制台鉴权：所有请求需带 x-console-token 或 ?token=
+      // 一次性票据兑换：浏览器只带 60 秒票据进来，这里换出 HttpOnly 会话 Cookie 并跳回首页。
+      // 必须放在 token 闸门**之前**：票据就是用来免 token 进页面的；票据本身一次性、
+      // 有时效，且只有拿到 consoleToken 的面板 host 半能申请（见 /api/console/ticket）。
+      if (req.method === 'GET' && url.pathname === '/auth/ticket') {
+        const ticket = String(url.searchParams.get('t') ?? '').trim();
+        pruneConsoleAuth();
+        const expiresAt = consoleTickets.get(ticket);
+        // 一次性：无论兑换成功与否都先消费，避免同一票据被重复尝试。
+        if (ticket) consoleTickets.delete(ticket);
+        if (!expiresAt || expiresAt <= Date.now()) {
+          res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
+          res.end('<!doctype html><meta charset="utf-8"><title>票据无效</title><p style="font:14px system-ui;padding:24px">'
+            + '访问票据无效或已过期（一次性票据 60 秒内有效）。请回到 DSH「设置 → QQ 桥接」重新点「打开控制台」。</p>');
+          return;
+        }
+        const sessionId = crypto.randomBytes(32).toString('base64url');
+        consoleSessions.set(sha256Hex(sessionId), Date.now() + CONSOLE_SESSION_TTL_MS);
+        res.writeHead(302, {
+          ...SECURITY_HEADERS,
+          location: '/',
+          'set-cookie': `${CONSOLE_COOKIE_NAME}=${sessionId}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(CONSOLE_SESSION_TTL_MS / 1000)}`
+        });
+        res.end();
+        return;
+      }
+      // 控制台鉴权：所有请求需带 x-console-token 或 ?token=（旧路径），
+      // 或带一次性票据换来的会话 Cookie（新路径，推荐；长期 token 不进地址栏）。
       // 定长比较：`!==` 会在第一个不同的字符处短路，理论上可被本机进程用响应时延逐字节试探。
       // 令牌是 192 bit 随机值且只监听回环，所以这是纵深防御而非在野漏洞。
       const suppliedToken = String(url.searchParams.get('token') ?? req.headers['x-console-token'] ?? '');
@@ -3480,7 +3600,8 @@ async function main() {
         if (a.length !== b.length) return false;
         return crypto.timingSafeEqual(a, b);
       })();
-      if (consoleToken && !tokenMatches) {
+      const cookieSessionOk = consoleCookieSessionOk(req);
+      if (consoleToken && !tokenMatches && !cookieSessionOk) {
         if (req.method === 'GET' && url.pathname === '/') {
           res.writeHead(401, { 'content-type': 'text/html; charset=utf-8', ...SECURITY_HEADERS });
           res.end('<!doctype html><meta charset="utf-8"><title>需要令牌</title><script>const t=prompt(\'请输入控制台访问令牌\');if(t)location.href=\'/?token=\'+encodeURIComponent(t);</script>');
@@ -4242,26 +4363,34 @@ async function main() {
         if (req.method === 'GET' && url.pathname === '/api/dsh/model') {
           const provider = String(cfg.dsh?.provider || 'deepseek-official');
           const model = String(cfg.dsh?.model || 'deepseek-flash');
-          // 档位优先取 DSH 实际公布的能力（DSH 换档位词汇或换 provider 时自动跟随），失败退回内置白名单。
-          let options = REASONING_EFFORT_OPTIONS.slice();
+          // 档位来自 DSH 公布的能力（**不过滤**：0.2.0 里 id 是适配器自定义字符串，
+          // 硬编码白名单会把 disabled / medium 这类真实档位吞掉）。
+          let options = REASONING_EFFORT_FALLBACKS.slice();
           let labels = {};
           let providerDefault = null;
           let catalogSource = 'fallback';
+          let reasoningSupported = false;
+          let efforts = [];
+          let effortChecked = false;
           try {
             if (!modelCatalogInFlight) {
               modelCatalogInFlight = withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog')
                 .finally(() => { modelCatalogInFlight = null; });
             }
             const catalog = unwrap(await modelCatalogInFlight, 'session.modelCatalog');
-            const group = (catalog?.groups ?? []).find((g) => g?.id === provider);
-            const entry = (group?.models ?? []).find((m) => m?.id === model);
-            const efforts = entry?.reasoning?.efforts ?? [];
-            const advertised = efforts.map((e) => String(e?.id ?? '')).filter((id) => REASONING_EFFORT_OPTIONS.includes(id));
-            if (advertised.length) {
-              options = advertised;
-              labels = Object.fromEntries(efforts.map((e) => [String(e.id), { name: e.name ?? '', description: e.description ?? '' }]));
-              providerDefault = entry.reasoning.defaultEffort ?? null;
+            const capability = reasoningCapabilityOf(catalog, provider, model);
+            if (capability !== null) {
+              effortChecked = true;
+              reasoningSupported = capability.supported;
+              efforts = capability.efforts;
+              providerDefault = capability.defaultEffort;
               catalogSource = 'dsh';
+              if (capability.supported) {
+                options = capability.efforts.map((e) => e.id);
+                labels = Object.fromEntries(capability.efforts.map((e) => [e.id, { name: e.name, description: e.description }]));
+              } else {
+                options = [];
+              }
             }
           } catch (error) {
             // 同一条失败原因只记一次：控制台每次刷新都会打这条接口，否则日志会被刷爆。
@@ -4271,18 +4400,84 @@ async function main() {
               log(`读取 DSH 模型能力失败，思考强度暂用内置清单：${reason}`);
             }
           }
+          const configuredEffort = String(cfg.dsh?.reasoningEffort || '');
           sendJson({
             provider,
             model,
-            reasoningEffort: String(cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT),
+            reasoningEffort: configuredEffort === 'auto' ? '' : (configuredEffort || REASONING_EFFORT_DEFAULT),
+            effortMode: configuredEffort === 'auto' ? 'auto' : 'explicit',
             options,
             labels,
+            efforts,
+            reasoningSupported,
+            effortChecked,
             default: REASONING_EFFORT_DEFAULT,
+            fallbackOptions: REASONING_EFFORT_FALLBACKS.slice(),
             providerDefault,
             catalogSource,
-            // selectModel 会同时写会话级与 DSH 全局默认（~/.dsh/settings.yaml 的 agent-default-model），
-            // 控制台要把这点明确告诉管理员，避免「只想调 QQ 助手却改了 Web GUI 新会话默认」的意外。
-            globalSideEffect: true,
+            // 控制台/面板要把「新方案不写全局默认」这一点明确透出去；globalSideEffect 保留为
+            // 兼容旧控制台的字段名，含义已变为「是否使用会把全局默认一起写掉的旧路径」。
+            modelScope: modelScope(),
+            globalSideEffect: modelScope() === 'global',
+          });
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/dsh/model') {
+          const body = await readBody();
+          const provider = String(body.provider ?? '').trim();
+          const model = String(body.model ?? '').trim();
+          if (!provider || !model) { sendJson({ ok: false, error: 'provider 与 model 都不能为空' }, 400); return; }
+          let catalog = null;
+          let catalogError = '';
+          try {
+            if (!modelCatalogInFlight) {
+              modelCatalogInFlight = withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog')
+                .finally(() => { modelCatalogInFlight = null; });
+            }
+            catalog = unwrap(await modelCatalogInFlight, 'session.modelCatalog');
+          } catch (error) {
+            catalogError = String(error?.message ?? error);
+          }
+          // 模型必须在目录里（= 可用）；目录不可用时只做形状校验，并把 checked=false 透给 UI。
+          if (catalog !== null) {
+            const group = (catalog?.groups ?? []).find((g) => g?.id === provider);
+            const entry = (group?.models ?? []).find((m) => m?.id === model);
+            if (!entry) {
+              sendJson({ ok: false, error: `模型 ${provider}/${model} 不在 DSH 当前可路由的模型目录里`, catalogError }, 400);
+              return;
+            }
+          }
+          // 思考强度：显式传入时必须被该模型支持；省略时用目录里的 defaultEffort，
+          // 也没有就记 'auto'（交给适配器默认，绝不硬塞一个旧档位）。
+          const capability = reasoningCapabilityOf(catalog, provider, model);
+          let effort;
+          if (body.reasoningEffort !== undefined && body.reasoningEffort !== null && String(body.reasoningEffort).trim() !== '') {
+            const check = validateEffortForModel(catalog, provider, model, body.reasoningEffort);
+            if (!check.ok) { sendJson({ ok: false, error: check.message }, 400); return; }
+            effort = normalizeReasoningEffort(body.reasoningEffort);
+          } else if (capability?.defaultEffort) {
+            effort = normalizeReasoningEffort(capability.defaultEffort);
+          } else {
+            effort = 'auto';
+          }
+          // fail-fast：配置损坏时直接 500，绝不回写（与白名单/强度接口同语义）。
+          const configFile = path.join(ROOT, 'config.json');
+          const file = readConfigObject(configFile);
+          file.dsh = { ...(file.dsh ?? {}), provider, model, reasoningEffort: effort };
+          atomicWriteJson(configFile, file);
+          cfg.dsh = { ...(cfg.dsh ?? {}), provider, model, reasoningEffort: effort };
+          // 递增代号：已在运行的 QQ 会话在下一条消息重新应用模型（无需重启桥接或 DSH）。
+          modelSelectionEpoch += 1;
+          const selected = { provider, model, ...(effort === 'auto' ? {} : { reasoningEffort: effort }) };
+          log(`控制台：QQ 模型已设为 ${provider}/${model}${effort === 'auto' ? '（思考强度交给适配器默认）' : `（思考强度 ${effort}）`}；对已有会话于下一条消息生效，作用域 ${modelScope()}`);
+          sendJson({
+            ok: true,
+            selected,
+            effortMode: effort === 'auto' ? 'auto' : 'explicit',
+            effortChecked: capability !== null,
+            catalogError,
+            modelScope: modelScope(),
+            globalSideEffect: modelScope() === 'global',
           });
           return;
         }
@@ -4291,6 +4486,25 @@ async function main() {
           let effort;
           try { effort = normalizeReasoningEffort(body.reasoningEffort); }
           catch (error) { sendJson({ ok: false, error: error?.message ?? '思考强度无效' }, 400); return; }
+          // 能力校验：提交给模型前必须确认这个档位真的存在（目录读不到时只能标记未确认，
+          // 不能假装确认过）。不兼容的档位会被适配器硬拒绝，与其等每条消息失败，不如这里就拒。
+          let effortChecked = false;
+          try {
+            if (!modelCatalogInFlight) {
+              modelCatalogInFlight = withTimeout(fetchModelCatalog(), 3000, 'session/modelCatalog')
+                .finally(() => { modelCatalogInFlight = null; });
+            }
+            const catalog = unwrap(await modelCatalogInFlight, 'session.modelCatalog');
+            const check = validateEffortForModel(catalog, String(cfg.dsh?.provider || ''), String(cfg.dsh?.model || ''), effort);
+            effortChecked = check.checked;
+            if (!check.ok) { sendJson({ ok: false, error: check.message }, 400); return; }
+          } catch (error) {
+            const reason = String(error?.message ?? error);
+            if (!modelCatalogErrorLogged.has(reason)) {
+              modelCatalogErrorLogged.add(reason);
+              log(`读取 DSH 模型能力失败，思考强度未做能力校验：${reason}`);
+            }
+          }
           const configFile = path.join(ROOT, 'config.json');
           // fail-fast：配置损坏时直接 500，绝不回写（与白名单接口同语义）
           const file = readConfigObject(configFile);
@@ -4300,7 +4514,7 @@ async function main() {
           // 递增代号：已在运行的会话在下一条消息会重新 selectModel（无需重启桥接或 DSH）
           modelSelectionEpoch += 1;
           log(`控制台：DSH 思考强度已设为 ${effort}（对已有会话于下一条消息生效）`);
-          sendJson({ ok: true, reasoningEffort: effort });
+          sendJson({ ok: true, reasoningEffort: effort, effortChecked });
           return;
         }
 
@@ -4344,6 +4558,16 @@ async function main() {
           return;
         }
         // ── 控制台访问令牌（可手动修改/生成随机） ─────────────────────────────
+        if (req.method === 'POST' && url.pathname === '/api/console/ticket') {
+          // 只发给已通过 token 鉴权的调用方（面板 host 半）。票据不包含也不等价于
+          // consoleToken：它只能换一次 8 小时的浏览器会话 Cookie，且 60 秒内不用即作废。
+          pruneConsoleAuth();
+          if (consoleTickets.size > 32) consoleTickets.clear();
+          const ticket = crypto.randomBytes(24).toString('base64url');
+          consoleTickets.set(ticket, Date.now() + CONSOLE_TICKET_TTL_MS);
+          sendJson({ ok: true, ticket, expiresInMs: CONSOLE_TICKET_TTL_MS, path: '/auth/ticket' });
+          return;
+        }
         if (req.method === 'POST' && url.pathname === '/api/console/token') {
           const body = await readBody();
           let newToken = String(body.token ?? '').trim();
@@ -7987,32 +8211,103 @@ async function main() {
   // 返回 'applied' | 'not-found' | 'failed'。
   // 'not-found' 表示 DSH 侧会话已经不存在（DSH 重启、异常退出、归档竞态），
   // 本地映射已失效，调用方必须退役重建，否则每条消息都会对着一个不存在的会话重试。
+  /** DSH 面板 host 半的会话局部模型应用接口（不写全局默认模型）。 */
+  async function applyModelViaPanel(sessionId, selection) {
+    const base = String(cfg.dsh?.baseUrl || '').trim().replace(/\/+$/, '');
+    if (!base) return { ok: false, message: '未配置 dsh.baseUrl，无法调用面板' };
+    let res;
+    try {
+      res = await fetch(`${base}/qq-bridge-panel/model/apply`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId, ...selection }),
+        // 面板内部要 resume 会话 + 解析目录，给足余量但绝不无限挂起。
+        signal: AbortSignal.timeout(20000)
+      });
+    } catch (error) {
+      return { ok: false, message: `面板请求失败：${error?.message ?? error}` };
+    }
+    const body = await res.json().catch(() => null);
+    if (!res.ok || body?.ok === false) {
+      return { ok: false, message: body?.message || body?.error || `面板返回 HTTP ${res.status}` };
+    }
+    return { ok: true, selected: body?.selected ?? selection };
+  }
+
+  // 面板不可用的告警去重：同一条原因只打一次，避免每条 QQ 消息都刷屏。
+  const modelApplyWarned = new Set();
+
+  /**
+   * 把当前 QQ 模型应用到某个 DSH 会话。
+   * @returns {'applied' | 'not-found' | 'failed'}
+   *
+   * 为什么不能直接 `api.sessions.selectModel`（关键！）：
+   *   DSH 0.2.0 的 `session/selectModel` 除了设置会话局部模型，还会 fire-and-forget 调用
+   *   `agentDefaultModel.saveSelection(selected)` —— **无条件写 DSH 全局默认模型**
+   *   （~/.dsh/profiles/<profile>/cordis.patch.yml 的 agent-default-model）。RPC 层没有
+   *   remember / persist / scope 参数，调用方无法关掉它。原版 qq-bridge 就是这么写的，
+   *   于是「只想给 QQ 助手换模型」会悄悄改掉 Web GUI 新会话的默认模型。
+   *
+   *   现在的路径：面板 host 半用 DSH 自己的 `sessionController.agents.selectForNextRequest`
+   *   （= selectModel 去掉 saveSelection）做会话局部应用，模型落在会话日志的
+   *   `model/selection` 事件里，重开 DSH 仍在。`dsh.modelScope='global'` 才回到旧路径。
+   */
   async function ensureChatModel(sessionId, effortOverride = '') {
-    const effort = String(effortOverride || cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT);
+    // 'auto' = 交给适配器默认（不传 reasoningEffort）；空串同样按 auto 处理。
+    const rawEffort = String(effortOverride || cfg.dsh?.reasoningEffort || '').trim().toLowerCase();
+    const effort = rawEffort === '' || rawEffort === 'auto' ? '' : rawEffort;
     // 去重键带上 effort：黑话学习/研究会话用 cfg.slang.reasoningEffort(high)，聊天会话用
-    // dsh.reasoningEffort(low)，同一进程内两种强度必须分开记，否则会互相覆盖。
+    // dsh.reasoningEffort，同一进程内不同强度必须分开记，否则会互相覆盖。
     const appliedKey = `${modelSelectionEpoch}:${effort}`;
     if (modelAppliedSessions.get(sessionId) === appliedKey) return 'applied';
     const provider = String(cfg.dsh?.provider || 'deepseek-official');
     const model = String(cfg.dsh?.model || 'deepseek-flash');
-    let lastError = null;
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-      try {
-        const result = unwrap(await api.sessions.selectModel({ sessionId, provider, model, reasoningEffort: effort }), 'session.selectModel');
-        modelAppliedSessions.set(sessionId, appliedKey);
-        log(`已设置会话模型 ${sessionId} -> ${result.selected.provider}/${result.selected.model} (${result.selected.reasoningEffort ?? '默认'})`);
-        return 'applied';
-      } catch (error) {
-        lastError = error;
-        log(`设置会话模型失败 ${sessionId}（第 ${attempt}/2 次）: ${error?.message ?? error}`);
-        if (attempt < 2) await sleep(1000);
+    const selection = { provider, model, ...(effort ? { reasoningEffort: effort } : {}) };
+    const scope = modelScope();
+
+    // 旧路径：session/selectModel（会把全局默认模型一起改掉）。仅显式 opt-in 时使用。
+    if (scope === 'global') {
+      let lastError = null;
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          const result = unwrap(await api.sessions.selectModel({ sessionId, ...selection }), 'session.selectModel');
+          modelAppliedSessions.set(sessionId, appliedKey);
+          log(`已设置会话模型 ${sessionId} -> ${result.selected.provider}/${result.selected.model} (${result.selected.reasoningEffort ?? '默认'})`
+            + ' [dsh.modelScope=global：同时写入了 DSH 全局默认模型]');
+          return 'applied';
+        } catch (error) {
+          lastError = error;
+          log(`设置会话模型失败 ${sessionId}（第 ${attempt}/2 次）: ${error?.message ?? error}`);
+          if (attempt < 2) await sleep(1000);
+        }
       }
+      const message = String(lastError?.message ?? lastError ?? '');
+      if (/not[- ]?found/i.test(message)) {
+        modelAppliedSessions.set(sessionId, appliedKey);
+        return 'not-found';
+      }
+      return 'failed';
     }
-    const message = String(lastError?.message ?? lastError ?? '');
-    if (/not[- ]?found/i.test(message)) {
-      // 终态失败：记下 epoch，避免退役前（或退役失败时）被反复重试刷屏。
+
+    // 默认路径：会话局部（不写全局默认）。
+    const applied = await applyModelViaPanel(sessionId, selection);
+    if (applied.ok) {
+      modelAppliedSessions.set(sessionId, appliedKey);
+      const got = applied.selected ?? selection;
+      log(`已设置 QQ 会话模型 ${sessionId} -> ${got.provider}/${got.model} (${got.reasoningEffort ?? '适配器默认'}) [会话作用域，未改全局默认]`);
+      return 'applied';
+    }
+    const message = String(applied.message ?? '');
+    if (/not[- ]?found|不存在/i.test(message)) {
       modelAppliedSessions.set(sessionId, appliedKey);
       return 'not-found';
+    }
+    const warnKey = `${sessionId}:${appliedKey}:${message}`;
+    if (!modelApplyWarned.has(warnKey)) {
+      modelApplyWarned.add(warnKey);
+      if (modelApplyWarned.size > 200) modelApplyWarned.clear();
+      log(`⚠️ 无法为该会话应用 QQ 模型（${message}）。该会话将使用 DSH 默认模型；`
+        + '**没有**写 DSH 全局默认（dsh.modelScope=session）。请确认「QQ 桥接」面板已安装并随 DSH 加载。');
     }
     return 'failed';
   }

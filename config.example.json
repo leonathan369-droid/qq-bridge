@@ -4,6 +4,8 @@
     "provider": "deepseek-official",
     "model": "deepseek-flash",
     "reasoningEffort": "max",
+    "modelScope": "session",
+    "_modelScope_comment": "session（默认）= 只把模型应用到 QQ 会话（不写 DSH 全局默认模型，推荐）；global = 旧行为，会连带保存 DSH 全局默认模型（有副作用，需明确接受）。",
     "authToken": "",
     "authHeader": "authorization",
     "authPrefix": "Bearer",
@@ -40,8 +42,10 @@
   "consolePort": 3100,
   "consoleToken": "",
   "panel": {
+    "_comment": "「设置 → QQ 桥接」面板的代管启动配置。LLBot 是第三方程序：默认由你自己启动；要让面板一键启动它，必须在这里给出**固定命令数组**（不接受字符串/shell），或用 launcherPath + llbotQq 让面板派生 `[node, launcherPath, --qq, <qq>]`。",
     "llbotCommand": [],
-    "llbotCwd": ""
+    "llbotCwd": "",
+    "llbotQq": ""
   },
   "pricing": {
     "models": {

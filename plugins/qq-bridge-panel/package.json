@@ -1,7 +1,7 @@
 {
   "name": "qq-bridge-panel",
-  "version": "0.2.0-r3",
-  "description": "QQ 桥接面板：DSH 设置页里查看桥接/LLBot 端口状态、启动与停止，并在端口就绪后一键打开控制台与 LLBot WebUI",
+  "version": "0.3.0",
+  "description": "QQ Bridge for macOS —— DSH 设置页里的 QQ 智能体控制中心：真实健康检查、一键启动、运行模式、QQ 专用模型与推理强度、控制台安全打开",
   "keywords": [
     "dsh",
     "dsh-plugin",

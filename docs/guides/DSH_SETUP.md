@@ -80,7 +80,14 @@
 
    > 默认模式为 **`reserved2`（二代仿真）**，即“文本不自动转发、AI 通过工具自主收发”。如果你想改用 `chat` / `closed-agent` / `reserved`，在**桥接控制台**（默认 `http://127.0.0.1:3100`）顶部按钮切换即可 —— 桥接会同时写入 DSH 设置与本地 `state/mode.json`，**无需重启**（每 5 秒轮询即时生效）。本地文件保存模式兜底与 `closedAgentPreset`；正常情况下模式以 DSH 设置为准，请通过控制台切换。
 
-   > 重启后打开 **DSH 设置 → QQ 桥接**：这一页由 `plugins/qq-bridge-panel` 提供，直接显示桥接控制台与 LLBot WebUI 的端口状态，可**启动/停止桥接**，并在端口就绪后一键**打开控制台 / 打开 LLBot WebUI**。面板只停止自己启动的桥接实例；终端/启动台启动的实例会提示「不是面板启动的」，避免误杀正在处理的 QQ 消息。LLBot 是第三方程序，默认只探测与打开，除非在 `config.json` 配置 `panel.llbotCommand` 才代管启停。
+   > 重启后打开 **DSH 设置 → QQ 桥接**：这一页由 `plugins/qq-bridge-panel` 提供，是本地控制中心，详见 [QQ_PANEL.md](QQ_PANEL.md)。要点：
+   > · 四项**真实健康检查**（桥接控制台 `/api/status`、LLBot `/api/login-info`、QQ 登录、桥接 `dshReady`），不拿「端口在监听」当健康；
+   > · **一键启动**（幂等：已运行即跳过；等待 QQ 扫码不算失败；每步有独立超时与结果）；
+   > · 服务管理：只停止**面板能验证归属**的进程（pid + 命令行指纹 + 端口三重校验，DSH 重启后仍能识别）；终端/启动台启动的实例提示「不是面板启动的」，绝不 kill；
+   > · 运行模式：优先经桥接 `/api/mode` 写穿 DSH `qq-mode`，桥接不在时退回写 DSH settings，**回读校验**真实生效值；
+   > · QQ 专用模型 / 推理强度：读 DSH 真实模型目录，**只作用于 QQ 会话**（不写 DSH 全局默认模型）；
+   > · 打开控制台走 **60 秒一次性票据**，长期 `consoleToken` 不再进浏览器地址栏。
+   > LLBot 是第三方程序，默认只探测与打开；要面板代管启动需在 `config.json` 配 `panel.llbotCommand`（固定命令数组），或用 `snowluma.launcherPath` + `panel.llbotQq` 派生。
    > 该插件默认从自身位置向上找桥接仓库（同时存在 `config.json` 与 `src/bridge.js`）。如果你不是用本仓库的 `setup-dsh.mjs` 安装（例如从 npm 装进 profile），请设置环境变量 `QQ_BRIDGE_DIR=/path/to/qq-bridge` 再启动 DSH。
 
 ## 验证是否装好
@@ -90,7 +97,7 @@
 0. **一键自检**：`npm run verify:adaptation` —— 覆盖 preset persona schema、bundle patch 与工具守卫、版本身份一致性、preset fail-closed 护栏，以及**运行中的 DSH 0.2.0 实测**（`qq-mode` 命名空间可列可写、`session/projections`、`session/control` 的 `projections` 形状、`stopSessionWork` 退役会话、`$events` ready 帧、`session/modelCatalog`、点号 endpoint 仍 404）等共 65 项断言。
    > 若你的环境禁止起子进程（例如在 DSH 的沙箱会话里跑），脚本内那批 `node --check` 语法检查会被**显式记为跳过**（`⏭`）而不是报假失败 —— 请在普通终端重跑以覆盖它们。
 1. **切换桥接模式**：打开桥接控制台（默认 `http://127.0.0.1:3100`），顶部的「聊天模式 / 封闭 Agent / 一代仿真模式 / 二代仿真模式」按钮即为当前生效的切换入口。控制台会同时写入 DSH 设置与本地 `state/mode.json`。
-   > ℹ️ DSH 设置页里**没有** `qq-mode` 模式卡片：`plugins/qq-mode-console` 只实现了 host 半，而卡片要求插件自带浏览器半（`package.json` 的 `dsh.client` + `lib/client.js`）。`qq-mode` 命名空间本身**可用**（`settings/describe` 能列出、`settings/update` 能写成功），缺的只是那张模式表单 —— 所以模式切换仍走控制台。设置里的「QQ 桥接」页（`plugins/qq-bridge-panel`）是另一件事：只管端口状态、启停和打开控制台/LLBot，不承载模式切换。参见下方「常见问题」。
+   > ℹ️ DSH 设置页里**没有** `qq-mode` 的自动表单卡片：`plugins/qq-mode-console` 只实现了 host 半（命名空间本身可用：`settings/describe` 能列出、`settings/update` 能写）。模式切换现在有两个入口：桥接控制台顶栏，以及 **DSH 设置 → QQ 桥接** 页的「运行模式」区（由 `plugins/qq-bridge-panel` 提供）。面板**不拥有** `qq-mode` 命名空间，只调用桥接或写该命名空间，因此两者并存、互不覆盖。参见下方「常见问题」。
    > DSH 0.2.0 起命名空间**不再需要任何注册调用**：它由 profile 里 `id: qq-mode` 那条 loader entry + 插件导出的 `Config`（带 `volatile` 字段）推导出来。0.1.x 的 `ctx.settings.register()` 已被 DSH 删除。
 2. **新建会话时**：agent preset 列表中应能看到：
    - `QQ 聊天角色`（`qq-chat`）
@@ -110,7 +117,7 @@
   4. 顺带确认 QQ 客户端本身是登录状态、没有被顶号；较新的 SnowLuma（**1.14.20 已确认**）会通过 `bot_status` 事件把账号上下线告诉我们，桥接日志里会打「QQ 账号会话已离线」。
   > 桥接**没有**任何原生/注入面（依赖全纯 JS，源码里没有 `.dll`/`.node`/FFI/进程注入），也不启动、不控制 SnowLuma 或 QQ，所以「QQ 注入失败」不可能是本桥接造成的。
 - **看不到 `qq-mode` 模式卡片**：这是**已知限制**，不是配置错误。DSH 的 `settings.plugin.item` 槽位只渲染「host 已注册的命名空间 ∩ 声明了该 key 的卡片」，而卡片必须由插件的**浏览器半**（`package.json` 的 `dsh.client` + `lib/client.js`）注册；`plugins/qq-mode-console` 目前只有 host 半。反复重跑 `setup-dsh.mjs` 或重启 DSH 都不会让模式卡片出现。
-  - 需要的是**开关**而不是模式表单时，用设置里的「QQ 桥接」页（`plugins/qq-bridge-panel`，自带浏览器半）：能启停桥接并打开控制台/LLBot；**模式切换仍在控制台**。
+  - 需要开关式管理时用设置里的「QQ 桥接」页（`plugins/qq-bridge-panel`，自带浏览器半）：一键启动、服务管理、运行模式、QQ 专用模型与推理强度、诊断都在这一页；也能打开控制台与其完整表单。
   - 想把模式表单也搬进设置页，需要给 `qq-mode-console` 补一个 client 半（`dsh.client` + `lib/client.js` + `settings.section` 注册），目前没有做。
 - **改了模式却不生效 / 5 秒后被改回去**：**此问题已在 `src/bridge.js` 修复**（桥接需重启后生效）。历史成因：`refreshMode()` 每 5 秒被 `checkDsh` 调用一次，先读 DSH 的 `qq-mode` 命名空间，只要有合法值就**直接 return，完全忽略本地 `state/mode.json`**；而命名空间的默认值始终存在，所以 DSH 侧永远有值 —— 于是控制台写本地文件会在下一次轮询被覆盖回滚。现在 `POST /api/mode` 会**写穿到 DSH 设置**（`api.settings.update({ ns: 'qq-mode', patch: { mode } })`），响应里新增 `dshSynced` 字段；若写穿失败（DSH 未运行等）会记日志并保留本地值。注意 `settings/update` 在 0.2.0 是**多参数** RPC：args 是 `{ ns, patch, expectedRevision }` 平铺，**不是** `{ request: {...} }`（传 request 会被网关拒为 `gateway/arguments-invalid`）。同源问题：`closedAgentPreset` 在 DSH schema 里不存在，原先也因这个提前 return 而失效，现已改为始终以本地 `state/mode.json` 为准。若仍看到回滚，检查桥接日志里是否有「写穿 DSH 设置失败」。
 - **MCP 工具没有出现**：确认 `cordis.patch.yml` 中三个 MCP 条目的路径指向当前仓库，并重启 DSH。

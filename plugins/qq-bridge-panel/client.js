@@ -4,15 +4,20 @@
  * ⭐ client bundle 是**自注册脚本**（不是 ESM）：window.__ModuleLoader__.load({ id, factory }).
  *    id 必须等于 package.json 的 name；factory 返回 { inject, apply(ctx) }。
  *
- * 入口位置：`settings.section` 槽位 = DSH 设置左侧导航里的一页（与 dsh-bili-scroll
- * 的「刷B站」同一写法）。页面本身只发同源请求到 host 半的
- * `/qq-bridge-panel/{status,start,stop,open}`，不直接碰端口/进程/剪贴板。
+ * 入口位置：`settings.section` 槽位 = DSH 设置左侧导航里的一页。
+ * 页面只发同源请求到 host 半（/qq-bridge-panel/*），不直接碰端口/进程/浏览器。
  *
- * 交互约定（用户 2026-10-21 明确要求）：
- *   · 「启动 / 停止」是端口的开关；
- *   · 「打开控制台 / 打开 LLBot WebUI」只有在对应端口**已监听**时才可点，
- *     否则保持禁用并显示原因（不能让人点了没反应）。
+ * 页面结构（2026-10-21 产品化）：
+ *   A 标题 · B 四状态概览 · C 两个主操作 · D 服务管理 · E 运行模式
+ *   F QQ 专用模型（原生风格选择器）· G 推理强度 · H 高级设置与诊断（折叠）
+ *
+ * 模型选择器的视觉/交互对齐 DSH 原生 `ui-model-selection`：同样的 DSH 设计变量
+ * （--dsw-alias-*）、provider 分组、搜索、勾选、键盘导航、加载/失败/空态。
+ * 官方组件 `ModelSelect` 是私有函数、绑定在聊天会话的 slot 上，无法在 Settings 页
+ * 独立渲染（已核对 asar 内 lib/client.js）；因此这里实现"视觉与交互一致的适配层"，
+ * 数据仍走 DSH 的真实模型目录（host 半通过 sessionController.modelCatalog() 读取）。
  */
+
 window.__ModuleLoader__.load({
   id: 'qq-bridge-panel',
   factory: (require) => {
@@ -23,31 +28,134 @@ window.__ModuleLoader__.load({
     const API = '/qq-bridge-panel'
     const POLL_MS = 2500
 
+    // ── 样式 ────────────────────────────────────────────────────────────────
+    // 颜色全部走 DSH 设计变量；拿不到时用中性半透明值兜底（亮/暗主题都能看）。
     const CSS = `
-[data-qbp-page]{display:flex;flex-direction:column;gap:16px;padding:2px 2px 8px;max-width:680px;color:inherit;}
-[data-qbp-title]{font-size:15px;font-weight:600;}
-[data-qbp-sub]{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#8b8f96);}
-[data-qbp-card]{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid rgba(128,128,128,.22);border-radius:12px;}
-[data-qbp-card-head]{display:flex;align-items:center;gap:8px;}
-[data-qbp-card-name]{font-size:13px;font-weight:600;flex:1;min-width:0;}
-[data-qbp-dot]{flex:none;width:8px;height:8px;border-radius:4px;background:rgba(128,128,128,.45);}
-[data-qbp-dot][data-on]{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.18);}
-[data-qbp-meta]{font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary,#8b8f96);word-break:break-all;}
+[data-qbp-page]{display:flex;flex-direction:column;gap:18px;padding:2px 4px 24px;max-width:760px;color:inherit;
+  font-size:13px;line-height:1.5;}
+[data-qbp-head]{display:flex;flex-direction:column;gap:4px;}
+[data-qbp-title]{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:600;color:var(--dsw-alias-label-primary,inherit);}
+[data-qbp-title-badge]{font-size:10px;font-weight:500;padding:1px 6px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.3));
+  color:var(--dsw-alias-label-tertiary,#8b8f96);}
+[data-qbp-sub]{font-size:12px;color:var(--dsw-alias-label-tertiary,#8b8f96);}
+[data-qbp-section]{display:flex;flex-direction:column;gap:10px;}
+[data-qbp-section-head]{display:flex;align-items:baseline;gap:8px;}
+[data-qbp-section-title]{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,inherit);}
+[data-qbp-section-note]{font-size:11px;color:var(--dsw-alias-label-tertiary,#8b8f96);}
+[data-qbp-card]{display:flex;flex-direction:column;gap:10px;padding:12px 14px;border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.22));
+  border-radius:var(--dsw-radius-lg,12px);background:var(--dsw-alias-bg-module-platform,rgba(128,128,128,.05));}
+[data-qbp-card-plain]{background:transparent;}
+[data-qbp-grid]{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;}
+@media (max-width:640px){[data-qbp-grid]{grid-template-columns:repeat(2,minmax(0,1fr));}}
+[data-qbp-stat]{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:var(--dsw-radius-md,10px);
+  border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.2));min-width:0;}
+[data-qbp-stat-head]{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-tertiary,#8b8f96);}
+[data-qbp-stat-value]{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,inherit);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+[data-qbp-stat-detail]{font-size:11px;line-height:1.45;color:var(--dsw-alias-label-tertiary,#8b8f96);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+[data-qbp-dot]{flex:none;width:8px;height:8px;border-radius:50%;background:rgba(140,140,140,.55);}
+[data-qbp-dot][data-state="ok"]{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.16);}
+[data-qbp-dot][data-state="waiting"]{background:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.16);}
+[data-qbp-dot][data-state="degraded"]{background:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,.16);}
+[data-qbp-dot][data-state="down"]{background:rgba(140,140,140,.55);}
+[data-qbp-dot][data-state="error"]{background:#ef4444;box-shadow:0 0 0 3px rgba(239,68,68,.16);}
+[data-qbp-pill]{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:3px 9px;border-radius:999px;
+  border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.28));color:var(--dsw-alias-label-secondary,#5c6370);}
+[data-qbp-pill][data-tone="ready"]{border-color:rgba(34,197,94,.45);color:#16a34a;background:rgba(34,197,94,.1);}
+[data-qbp-pill][data-tone="partial"]{border-color:rgba(245,158,11,.45);color:#b45309;background:rgba(245,158,11,.1);}
+[data-qbp-pill][data-tone="waiting"]{border-color:rgba(59,130,246,.45);color:#2563eb;background:rgba(59,130,246,.1);}
+[data-qbp-pill][data-tone="error"]{border-color:rgba(239,68,68,.45);color:#dc2626;background:rgba(239,68,68,.1);}
 [data-qbp-row]{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
-[data-qbp-btn]{appearance:none;border:1px solid rgba(128,128,128,.3);background:rgba(128,128,128,.10);color:inherit;
-  font-size:12px;line-height:16px;padding:6px 12px;border-radius:8px;cursor:pointer;}
-[data-qbp-btn]:hover:not(:disabled){background:rgba(128,128,128,.18);}
-[data-qbp-btn]:disabled{opacity:.42;cursor:not-allowed;}
-[data-qbp-btn][data-primary]{background:#3b82f6;border-color:#3b82f6;color:#fff;}
-[data-qbp-btn][data-primary]:hover:not(:disabled){background:#2f74e0;}
-[data-qbp-btn][data-danger]{border-color:rgba(239,68,68,.5);color:#ef4444;}
-[data-qbp-btn][data-primary]:disabled,[data-qbp-btn][data-danger]:disabled{background:rgba(128,128,128,.10);border-color:rgba(128,128,128,.25);color:inherit;}
-[data-qbp-note]{font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary,#8b8f96);}
-[data-qbp-msg]{font-size:12px;line-height:18px;padding:8px 10px;border-radius:8px;background:rgba(128,128,128,.10);}
-[data-qbp-msg][data-kind="err"]{background:rgba(239,68,68,.12);color:#ef4444;}
+[data-qbp-row-end]{margin-left:auto;}
+[data-qbp-btn]{appearance:none;border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.3));
+  background:var(--dsw-alias-interactive-bg,rgba(128,128,128,.08));color:inherit;font:inherit;font-size:12px;
+  line-height:16px;padding:6px 12px;border-radius:8px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;
+  transition:background .12s,border-color .12s;}
+[data-qbp-btn]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.16));}
+[data-qbp-btn]:disabled{opacity:.45;cursor:not-allowed;}
+[data-qbp-btn][data-primary]{background:var(--dsw-alias-state-business-primary,#3b82f6);border-color:transparent;color:#fff;}
+[data-qbp-btn][data-primary]:hover:not(:disabled){filter:brightness(1.05);}
+[data-qbp-btn][data-primary]:disabled{background:rgba(128,128,128,.14);border-color:rgba(128,128,128,.25);color:inherit;filter:none;}
+[data-qbp-btn][data-danger]{border-color:rgba(239,68,68,.45);color:#dc2626;}
+[data-qbp-btn][data-lg]{padding:9px 18px;font-size:13px;border-radius:10px;}
+[data-qbp-btn][data-active]{border-color:var(--dsw-alias-state-business-primary,#3b82f6);color:var(--dsw-alias-state-business-primary,#3b82f6);}
+[data-qbp-meta]{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#8b8f96);word-break:break-all;}
+[data-qbp-meta][data-warn]{color:#b45309;}
+[data-qbp-code]{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;background:rgba(128,128,128,.12);
+  padding:1px 5px;border-radius:4px;word-break:break-all;}
+[data-qbp-msg]{font-size:12px;line-height:1.6;padding:9px 11px;border-radius:9px;background:rgba(128,128,128,.1);white-space:pre-wrap;}
+[data-qbp-msg][data-kind="err"]{background:rgba(239,68,68,.12);color:#dc2626;}
 [data-qbp-msg][data-kind="ok"]{background:rgba(34,197,94,.12);color:#16a34a;}
+[data-qbp-msg][data-kind="warn"]{background:rgba(245,158,11,.12);color:#b45309;}
+[data-qbp-steps]{display:flex;flex-direction:column;gap:4px;margin-top:2px;}
+[data-qbp-step]{display:flex;gap:8px;font-size:11px;line-height:1.5;}
+[data-qbp-step-state]{flex:none;width:38px;font-weight:600;color:var(--dsw-alias-label-tertiary,#8b8f96);}
+[data-qbp-step][data-state="done"] [data-qbp-step-state],[data-qbp-step][data-state="already"] [data-qbp-step-state]{color:#16a34a;}
+[data-qbp-step][data-state="failed"] [data-qbp-step-state]{color:#dc2626;}
+[data-qbp-step][data-state="waiting"] [data-qbp-step-state]{color:#2563eb;}
+[data-qbp-step][data-state="skipped"] [data-qbp-step-state]{color:#b45309;}
+[data-qbp-seg]{display:flex;gap:6px;flex-wrap:wrap;}
+[data-qbp-seg-item]{appearance:none;font:inherit;font-size:12px;padding:6px 12px;border-radius:8px;cursor:pointer;
+  border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.28));background:transparent;color:var(--dsw-alias-label-secondary,#5c6370);}
+[data-qbp-seg-item]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.12));}
+[data-qbp-seg-item][data-active]{border-color:var(--dsw-alias-state-business-primary,#3b82f6);
+  color:var(--dsw-alias-state-business-primary,#3b82f6);background:rgba(59,130,246,.08);font-weight:600;}
+[data-qbp-seg-item]:disabled{opacity:.45;cursor:not-allowed;}
+
+/* ── 模型选择器（对齐 DSH 原生 ModelSelect 的视觉）──────────────────────── */
+[data-qbp-model]{position:relative;display:flex;flex-direction:column;gap:8px;}
+[data-qbp-model-trigger]{appearance:none;font:inherit;text-align:left;cursor:pointer;display:flex;align-items:center;gap:8px;
+  min-height:34px;padding:7px 10px;border-radius:var(--dsw-radius-md,8px);
+  border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.28));background:rgba(128,128,128,.06);color:inherit;}
+[data-qbp-model-trigger]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.14));}
+[data-qbp-model-trigger]:disabled{opacity:.5;cursor:not-allowed;}
+[data-qbp-model-provider]{font-size:11px;color:var(--dsw-alias-label-tertiary,#8b8f96);flex:none;}
+[data-qbp-model-name]{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,inherit);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+[data-qbp-model-effort]{font-size:11px;color:var(--dsw-alias-label-tertiary,#8b8f96);flex:none;}
+[data-qbp-model-chevron]{margin-left:auto;flex:none;color:var(--dsw-alias-label-caption,#8b8f96);transition:transform .12s;}
+[data-qbp-model-chevron][data-open]{transform:rotate(180deg);}
+[data-qbp-menu]{position:fixed;z-index:1200;display:flex;flex-direction:column;width:min(440px,calc(100vw - 32px));
+  max-height:min(420px,calc(100vh - 120px));padding:4px;border-radius:var(--dsw-radius-lg,12px);
+  border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.28));background:var(--dsw-alias-bg-elevated,#ffffff);
+  box-shadow:0 12px 32px rgba(0,0,0,.18);overflow:hidden;color:inherit;}
+@media (prefers-color-scheme:dark){[data-qbp-menu]{background:var(--dsw-alias-bg-elevated,#24262b);}}
+[data-qbp-menu][data-theme="dark"]{background:var(--dsw-alias-bg-elevated,#24262b);}
+[data-qbp-search-row]{flex:none;display:flex;padding:2px 2px 4px;}
+[data-qbp-search]{flex:1;appearance:none;font:inherit;font-size:12px;padding:6px 8px;border-radius:8px;
+  border:1px solid transparent;background:rgba(128,128,128,.1);color:inherit;outline:none;}
+[data-qbp-search]:focus{border-color:var(--dsw-alias-state-business-primary,#3b82f6);}
+[data-qbp-menu-body]{flex:1;min-height:0;overflow-y:auto;}
+[data-qbp-group-label]{position:sticky;top:0;z-index:1;font-size:10px;text-transform:uppercase;letter-spacing:.04em;
+  color:var(--dsw-alias-label-tertiary,#8b8f96);padding:6px 8px 3px;background:inherit;}
+[data-qbp-option]{display:flex;align-items:center;gap:8px;width:100%;min-height:34px;box-sizing:border-box;
+  appearance:none;font:inherit;text-align:left;cursor:pointer;padding:5px 8px;border:none;border-radius:8px;
+  background:transparent;color:inherit;}
+[data-qbp-option][data-active]{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.16));}
+[data-qbp-option][data-selected]{font-weight:600;}
+[data-qbp-option-copy]{display:flex;flex-direction:column;min-width:0;flex:1;}
+[data-qbp-option-name]{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+[data-qbp-option-desc]{font-size:11px;color:var(--dsw-alias-label-tertiary,#8b8f96);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+[data-qbp-check]{flex:none;width:14px;color:var(--dsw-alias-state-business-primary,#3b82f6);}
+[data-qbp-menu-note]{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#8b8f96);padding:8px;}
+[data-qbp-menu-error]{font-size:11px;line-height:1.5;color:#dc2626;background:rgba(239,68,68,.1);border-radius:8px;padding:7px 8px;margin:2px;}
+[data-qbp-adv]{border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.22));border-radius:10px;overflow:hidden;}
+[data-qbp-adv-head]{appearance:none;font:inherit;width:100%;display:flex;align-items:center;gap:8px;padding:10px 12px;
+  background:transparent;border:none;color:inherit;cursor:pointer;text-align:left;font-size:12px;font-weight:600;}
+[data-qbp-adv-head]:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.1));}
+[data-qbp-adv-body]{display:flex;flex-direction:column;gap:10px;padding:2px 12px 12px;}
+[data-qbp-kv]{display:grid;grid-template-columns:120px minmax(0,1fr);gap:4px 10px;font-size:11px;line-height:1.5;}
+[data-qbp-kv dt]{color:var(--dsw-alias-label-tertiary,#8b8f96);}
+[data-qbp-kv dd]{margin:0;color:var(--dsw-alias-label-secondary,#5c6370);word-break:break-all;}
+[data-qbp-log]{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;line-height:1.5;
+  max-height:140px;overflow:auto;white-space:pre-wrap;background:rgba(128,128,128,.1);border-radius:8px;padding:8px;
+  color:var(--dsw-alias-label-secondary,#5c6370);}
+[data-qbp-spin]{display:inline-block;width:12px;height:12px;border-radius:50%;border:2px solid currentColor;
+  border-right-color:transparent;animation:qbp-spin .7s linear infinite;}
+@keyframes qbp-spin{to{transform:rotate(360deg);}}
 `
 
+    // ── 基础工具 ────────────────────────────────────────────────────────────
     const asJson = async (res) => {
       let data = {}
       try {
@@ -69,14 +177,300 @@ window.__ModuleLoader__.load({
         body: JSON.stringify(body ?? {}),
       })
 
-    function Dot(props) {
-      return h('span', { 'data-qbp-dot': '', ...(props.on ? { 'data-on': '' } : {}) })
+    const STATE_TEXT = {
+      ok: '运行中',
+      degraded: '异常',
+      down: '已停止',
+      unknown: '未知',
+      waiting: '等待扫码',
+      online: '在线',
+      external: '外部实例',
+    }
+    const toneOfState = (state) => ({
+      ok: 'ok',
+      degraded: 'degraded',
+      down: 'down',
+      unknown: 'unknown',
+      waiting: 'waiting',
+      online: 'ok',
+    }[state] ?? 'unknown')
+
+    /** 把任意状态词收敛成 CSS 支持的五种灯色。 */
+    function dotState(state) {
+      if (state === 'online') return 'ok'
+      if (state === 'waiting') return 'waiting'
+      if (state === 'degraded' || state === 'error') return state === 'error' ? 'error' : 'degraded'
+      if (state === 'down' || state === 'stopped') return 'down'
+      return 'unknown'
     }
 
+    function Dot(props) {
+      return h('span', { 'data-qbp-dot': '', 'data-state': dotState(props.state), title: props.title ?? '' })
+    }
+
+    function Card(props) {
+      return h('div', { 'data-qbp-card': '', ...(props.plain ? { 'data-qbp-card-plain': '' } : {}), ...props.attrs }, props.children)
+    }
+
+    function Btn({ label, onClick, disabled, primary, danger, title, busy, large, active }) {
+      return h(
+        'button',
+        {
+          'data-qbp-btn': '',
+          ...(primary ? { 'data-primary': '' } : {}),
+          ...(danger ? { 'data-danger': '' } : {}),
+          ...(large ? { 'data-lg': '' } : {}),
+          ...(active ? { 'data-active': '' } : {}),
+          disabled: Boolean(disabled),
+          title: title || '',
+          onClick,
+        },
+        busy ? h('span', { 'data-qbp-spin': '' }) : null,
+        busy ? `${label}…` : label,
+      )
+    }
+
+    function Section({ title, note, children }) {
+      return h(
+        'section',
+        { 'data-qbp-section': '' },
+        h(
+          'div',
+          { 'data-qbp-section-head': '' },
+          h('span', { 'data-qbp-section-title': '' }, title),
+          note ? h('span', { 'data-qbp-section-note': '' }, note) : null,
+        ),
+        children,
+      )
+    }
+
+    function Msg({ kind, text, steps }) {
+      if (!text && !(steps && steps.length)) return null
+      return h(
+        'div',
+        { 'data-qbp-msg': '', 'data-kind': kind || 'info' },
+        text || null,
+        steps && steps.length
+          ? h(
+              'div',
+              { 'data-qbp-steps': '' },
+              steps.map((step, index) =>
+                h(
+                  'div',
+                  { 'data-qbp-step': '', 'data-state': step.state, key: `${step.id}-${index}` },
+                  h('span', { 'data-qbp-step-state': '' }, {
+                    done: '完成',
+                    already: '已在跑',
+                    waiting: '等待',
+                    skipped: '跳过',
+                    failed: '失败',
+                  }[step.state] ?? step.state),
+                  h('span', {}, `${step.label}${step.message ? `：${step.message}` : ''}`),
+                ),
+              ),
+            )
+          : null,
+      )
+    }
+
+    // ── 模型工具 ────────────────────────────────────────────────────────────
+    const findGroup = (catalog, provider) => (catalog?.groups ?? []).find((g) => g?.id === provider)
+    const findModel = (catalog, provider, model) => (findGroup(catalog, provider)?.models ?? []).find((m) => m?.id === model)
+
+    function modelLabelOf(status, provider, model) {
+      const entry = findModel(status?.model?.catalog, provider, model)
+      if (entry) {
+        const group = findGroup(status.model.catalog, provider)
+        return {
+          providerName: String(group?.name ?? provider),
+          modelName: String(entry.name ?? model),
+          description: String(entry.description ?? ''),
+          efforts: Array.isArray(entry.reasoning?.efforts)
+            ? entry.reasoning.efforts.map((e) => ({ id: String(e.id), name: String(e.name ?? e.id), description: String(e.description ?? '') }))
+            : [],
+          defaultEffort: entry.reasoning?.defaultEffort != null ? String(entry.reasoning.defaultEffort) : null,
+          entry,
+        }
+      }
+      return { providerName: provider, modelName: model, description: '', efforts: [], defaultEffort: null, entry: null }
+    }
+
+    // ── 模型选择器 ──────────────────────────────────────────────────────────
+    function ModelMenu({ status, anchorRect, current, onPick, onClose }) {
+      const catalog = status?.model?.catalog
+      const failures = Array.isArray(catalog?.failures) ? catalog.failures : []
+      const groups = Array.isArray(catalog?.groups) ? catalog.groups : []
+      const [query, setQuery] = React.useState('')
+      const [active, setActive] = React.useState(0)
+      const inputRef = React.useRef(null)
+      const menuRef = React.useRef(null)
+
+      const options = React.useMemo(() => {
+        const q = query.trim().toLowerCase()
+        const list = []
+        for (const group of groups) {
+          const groupName = String(group?.name ?? group?.id ?? '')
+          const models = (group?.models ?? []).filter((model) => {
+            if (!q) return true
+            const text = `${groupName} ${group?.id ?? ''} ${model?.name ?? ''} ${model?.id ?? ''} ${model?.description ?? ''}`.toLowerCase()
+            return text.includes(q)
+          })
+          if (!models.length) continue
+          list.push({ kind: 'group', id: String(group?.id ?? ''), name: groupName })
+          for (const model of models) {
+            list.push({
+              kind: 'model',
+              provider: String(group?.id ?? ''),
+              providerName: groupName,
+              model: String(model?.id ?? ''),
+              modelName: String(model?.name ?? model?.id ?? ''),
+              description: String(model?.description ?? ''),
+            })
+          }
+        }
+        return list
+      }, [catalog, query])
+
+      const selectable = React.useMemo(() => options.map((item, index) => ({ item, index })).filter((row) => row.item.kind === 'model'), [options])
+
+      React.useEffect(() => {
+        if (inputRef.current) inputRef.current.focus()
+      }, [])
+      React.useEffect(() => {
+        setActive(selectable.length ? selectable[0].index : 0)
+      }, [query, catalog])
+
+      React.useEffect(() => {
+        const onDocDown = (event) => {
+          if (menuRef.current && !menuRef.current.contains(event.target)) onClose()
+        }
+        const onScroll = (event) => {
+          if (menuRef.current && event.target instanceof Node && menuRef.current.contains(event.target)) return
+          onClose()
+        }
+        document.addEventListener('mousedown', onDocDown, true)
+        window.addEventListener('resize', onClose)
+        window.addEventListener('scroll', onScroll, true)
+        return () => {
+          document.removeEventListener('mousedown', onDocDown, true)
+          window.removeEventListener('resize', onClose)
+          window.removeEventListener('scroll', onScroll, true)
+        }
+      }, [onClose])
+
+      const move = (delta) => {
+        if (!selectable.length) return
+        const currentIndex = selectable.findIndex((row) => row.index === active)
+        const next = (currentIndex + delta + selectable.length) % selectable.length
+        setActive(selectable[next].index)
+      }
+      const pickActive = () => {
+        const row = selectable.find((candidate) => candidate.index === active)
+        if (row) onPick(row.item)
+      }
+      const onKeyDown = (event) => {
+        if (event.key === 'ArrowDown') {
+          event.preventDefault()
+          move(1)
+        } else if (event.key === 'ArrowUp') {
+          event.preventDefault()
+          move(-1)
+        } else if (event.key === 'Enter') {
+          event.preventDefault()
+          pickActive()
+        } else if (event.key === 'Escape') {
+          event.preventDefault()
+          onClose()
+        }
+      }
+
+      const style = {
+        left: Math.max(8, Math.min(anchorRect.left, window.innerWidth - 460)),
+        top: Math.min(anchorRect.bottom + 6, window.innerHeight - 200),
+      }
+
+      let loading = !catalog && !status?.model?.catalogError
+      return h(
+        'div',
+        { 'data-qbp-menu': '', ref: menuRef, style, role: 'dialog', 'aria-label': '选择 QQ 专用模型', onKeyDown },
+        h(
+          'div',
+          { 'data-qbp-search-row': '' },
+          h('input', {
+            'data-qbp-search': '',
+            ref: inputRef,
+            value: query,
+            placeholder: '搜索 Provider 或模型…',
+            onChange: (event) => setQuery(event.target.value),
+            'aria-label': '搜索模型',
+          }),
+        ),
+        h(
+          'div',
+          { 'data-qbp-menu-body': '', role: 'listbox' },
+          loading
+            ? h('div', { 'data-qbp-menu-note': '' }, '正在读取 DSH 模型目录…')
+            : null,
+          !loading && status?.model?.catalogError
+            ? h('div', { 'data-qbp-menu-error': '' }, `模型目录不可用：${status.model.catalogError}`)
+            : null,
+          !loading && failures.length
+            ? h(
+                'div',
+                { 'data-qbp-menu-error': '' },
+                `以下 Provider 目录加载失败（可能是凭据缺失）：${failures.map((f) => `${f?.name ?? f?.id ?? '?'}（${f?.message ?? '未知原因'}）`).join('；')}`,
+              )
+            : null,
+          !loading && !catalog
+            ? h('div', { 'data-qbp-menu-note': '' }, '没有可用的模型目录。')
+            : null,
+          !loading && catalog && options.length === 0
+            ? h('div', { 'data-qbp-menu-note': '' }, query ? '没有匹配的模型。' : '模型目录为空：先在 DSH 里配置 Provider / API Key。')
+            : null,
+          options.map((item, index) => {
+            if (item.kind === 'group') {
+              return h('div', { 'data-qbp-group-label': '', key: `g-${item.id}-${index}` }, item.name || item.id)
+            }
+            const selected = current.provider === item.provider && current.model === item.model
+            return h(
+              'button',
+              {
+                'data-qbp-option': '',
+                ...(selected ? { 'data-selected': '' } : {}),
+                ...(index === active ? { 'data-active': '' } : {}),
+                key: `m-${item.provider}-${item.model}`,
+                role: 'option',
+                'aria-selected': selected,
+                title: `${item.provider}/${item.model}`,
+                onMouseEnter: () => setActive(index),
+                onClick: () => onPick(item),
+              },
+              h('span', { 'data-qbp-option-copy': '' },
+                h('span', { 'data-qbp-option-name': '' }, item.modelName),
+                item.description ? h('span', { 'data-qbp-option-desc': '' }, item.description) : null,
+              ),
+              selected ? h('span', { 'data-qbp-check': '' }, '✓') : null,
+            )
+          }),
+        ),
+        h(
+          'div',
+          { 'data-qbp-menu-note': '' },
+          '只影响 QQ Agent；不会修改 DSH 全局默认模型、普通会话或 World Architect。↑↓ 选择 · Enter 确认 · Esc 关闭',
+        ),
+      )
+    }
+
+    // ── 主页面 ──────────────────────────────────────────────────────────────
     function Panel() {
       const [status, setStatus] = React.useState(null)
       const [busy, setBusy] = React.useState('')
       const [message, setMessage] = React.useState(null)
+      const [menuOpen, setMenuOpen] = React.useState(false)
+      const [menuRect, setMenuRect] = React.useState(null)
+      const [advancedOpen, setAdvancedOpen] = React.useState(false)
+      const [advancedModeOpen, setAdvancedModeOpen] = React.useState(false)
+      const triggerRef = React.useRef(null)
 
       const refresh = React.useCallback(async () => {
         try {
@@ -99,173 +493,514 @@ window.__ModuleLoader__.load({
         }
       }, [refresh])
 
-      const act = async (label, task) => {
+      const act = async (label, task, { poll = true } = {}) => {
         if (busy) return
         setBusy(label)
         setMessage(null)
         try {
           const out = await task()
-          setMessage({ kind: out?.ok === false ? 'err' : 'ok', text: String(out?.message ?? '完成') })
+          const kind = out?.ok === false ? 'err' : out?.warning || out?.warnings?.length ? 'warn' : 'ok'
+          const extra = out?.warnings?.length ? `\n${out.warnings.join('\n')}` : ''
+          setMessage({
+            kind,
+            text: `${out?.message ?? '完成'}${extra}`,
+            steps: out?.steps,
+          })
         } catch (error) {
           setMessage({ kind: 'err', text: String(error?.message ?? error) })
         } finally {
           setBusy('')
-          refresh()
+          if (poll) refresh()
         }
       }
 
-      const bridge = status?.bridge
-      const llbot = status?.llbot
-      const nodeReady = Boolean(status?.nodePath)
-      const bridgeOpen = Boolean(bridge?.open)
-      const llbotOpen = Boolean(llbot?.open)
-      const bridgeDisabled = busy !== '' || bridgeOpen
+      if (!status) {
+        return h('div', { 'data-qbp-page': '' }, h('div', { 'data-qbp-meta': '' }, '正在连接面板后端…'))
+      }
 
+      const services = status.services ?? {}
+      const bridge = services.bridge ?? {}
+      const llbot = services.llbot ?? {}
+      const qq = services.qq ?? {}
+      const dsh = services.dsh ?? {}
+      const mode = status.mode ?? {}
+      const model = status.model ?? {}
+      const panel = status.panel ?? {}
+      const current = model.current ?? {}
+      const info = modelLabelOf(status, current.provider, current.model)
+      const catalogLoaded = Boolean(model.catalog)
+      const configuredEfforts = (() => {
+        if (info.efforts.length) return info.efforts
+        if (Array.isArray(model.efforts) && model.efforts.length) {
+          return model.efforts.map((e) => ({ id: String(e.id), name: String(e.name ?? e.id), description: String(e.description ?? '') }))
+        }
+        return []
+      })()
+      const effortSupported = configuredEfforts.length > 0
+      const currentEffort = current.effortMode === 'auto' ? '' : String(current.reasoningEffort || '')
+
+      const aggregateTone = {
+        ready: 'ready',
+        partial: 'partial',
+        'waiting-login': 'waiting',
+        error: 'error',
+        stopped: 'unknown',
+      }[status.aggregate] ?? 'unknown'
+
+      const canStartAll = !busy
+      const bridgeHealthy = bridge.running && bridge.health === 'ok'
+      const llbotRunning = Boolean(llbot.running)
+      const modeOptions = [...(mode.options ?? []), ...(mode.advanced ?? [])]
+
+      const openModelMenu = () => {
+        const rect = triggerRef.current?.getBoundingClientRect()
+        if (!rect) return
+        setMenuRect({ left: rect.left, bottom: rect.bottom, top: rect.top })
+        setMenuOpen(true)
+        refresh()
+      }
+
+      const selectModel = (item) => {
+        setMenuOpen(false)
+        // 切换模型时处理旧推理强度：新模型支持就保留，否则用它的默认档；不能静默提交不兼容档位。
+        const target = modelLabelOf(status, item.provider, item.model)
+        let nextEffort = currentEffort
+        let effortNote = ''
+        if (nextEffort && !target.efforts.some((e) => e.id === nextEffort)) {
+          nextEffort = target.defaultEffort || ''
+          effortNote = target.defaultEffort
+            ? `；原推理强度在新模型上不存在，已改用它的默认档 ${target.defaultEffort}`
+            : '；新模型不支持可配置推理强度，已清空该设置'
+        }
+        act('切换模型', () =>
+          post('/model', {
+            provider: item.provider,
+            model: item.model,
+            ...(nextEffort ? { reasoningEffort: nextEffort } : {}),
+          }).then((out) => ({ ...out, message: `${out?.message ?? ''}${effortNote}` })),
+        )
+      }
+
+      const selectEffort = (effortId) => {
+        act('切换推理强度', () =>
+          post('/model', {
+            provider: current.provider,
+            model: current.model,
+            ...(effortId ? { reasoningEffort: effortId } : {}),
+          }),
+        )
+      }
+
+      const setMode = (nextMode) => act('切换模式', () => post('/mode', { mode: nextMode }))
+
+      // ── 渲染 ──────────────────────────────────────────────────────────────
       return h(
         'div',
         { 'data-qbp-page': '' },
-        h('div', { 'data-qbp-title': '' }, 'QQ 桥接'),
+
+        // A. 标题
         h(
           'div',
-          { 'data-qbp-sub': '' },
-          '管理桥接进程与控制台端口，并在端口就绪后打开控制台或 LLBot WebUI。',
+          { 'data-qbp-head': '' },
+          h(
+            'div',
+            { 'data-qbp-title': '' },
+            'QQ Bridge for macOS',
+            h('span', { 'data-qbp-title-badge': '' }, `v${panel.version ?? '?'}`),
+            h('span', { 'data-qbp-pill': '', 'data-tone': aggregateTone, 'data-qbp-row-end': '', title: qq.detail || '' },
+              h(Dot, { state: status.aggregate === 'ready' ? 'ok' : status.aggregate === 'error' ? 'error' : status.aggregate === 'waiting-login' ? 'waiting' : status.aggregate === 'partial' ? 'degraded' : 'down' }),
+              status.aggregateText ?? '未知',
+            ),
+          ),
+          h('div', { 'data-qbp-sub': '' }, 'DeepSeek Harness · 本地 QQ Agent · 本地进程与模型控制台'),
         ),
-        status && !status.configFound
-          ? h('div', { 'data-qbp-msg': '', 'data-kind': 'err' }, `读不到桥接配置：${status.configFile}${status.configError ? `（${status.configError}）` : ''}`)
+
+        !panel.configFound
+          ? h('div', { 'data-qbp-msg': '', 'data-kind': 'err' }, `读不到桥接配置：${panel.configFile}${panel.configError ? `（${panel.configError}）` : ''}`)
           : null,
 
-        // ── 桥接控制台 ────────────────────────────────────────────────────
+        // B. 系统状态概览（四项独立真实健康检查）
+        h(
+          Section,
+          { title: '系统状态', note: qq.source ? `QQ 状态来源：${qq.source}` : '' },
+          h(
+            'div',
+            { 'data-qbp-grid': '' },
+            h(
+              'div',
+              { 'data-qbp-stat': '' },
+              h('div', { 'data-qbp-stat-head': '' }, h(Dot, { state: bridge.health }), 'QQ Bridge'),
+              h('div', { 'data-qbp-stat-value': '' }, bridge.running ? (bridge.health === 'ok' ? '运行中' : '运行中（异常）') : '未运行'),
+              h('div', { 'data-qbp-stat-detail': '', title: bridge.detail || '' }, bridge.detail || `端口 ${bridge.port ?? '—'}`),
+            ),
+            h(
+              'div',
+              { 'data-qbp-stat': '' },
+              h('div', { 'data-qbp-stat-head': '' }, h(Dot, { state: llbot.health }), 'LLBot'),
+              h('div', { 'data-qbp-stat-value': '' }, llbot.running ? (llbot.health === 'ok' ? '运行中' : '运行中（异常）') : '未运行'),
+              h('div', { 'data-qbp-stat-detail': '', title: llbot.detail || '' }, llbot.detail || `端口 ${llbot.port ?? '—'}`),
+            ),
+            h(
+              'div',
+              { 'data-qbp-stat': '' },
+              h('div', { 'data-qbp-stat-head': '' }, h(Dot, { state: qq.state }), 'QQ 登录'),
+              h('div', { 'data-qbp-stat-value': '' }, qq.state === 'online' ? '已登录' : qq.state === 'waiting' ? '等待扫码' : '未知'),
+              h('div', { 'data-qbp-stat-detail': '', title: qq.detail || '' }, qq.detail || '—'),
+            ),
+            h(
+              'div',
+              { 'data-qbp-stat': '' },
+              h('div', { 'data-qbp-stat-head': '' }, h(Dot, { state: dsh.state }), 'DSH 连接'),
+              h('div', { 'data-qbp-stat-value': '' }, dsh.state === 'ok' ? '已连接' : dsh.state === 'degraded' ? '未就绪' : dsh.state === 'down' ? '不可达' : '未知'),
+              h('div', { 'data-qbp-stat-detail': '', title: dsh.detail || '' }, dsh.detail || dsh.baseUrl || '—'),
+            ),
+          ),
+        ),
+
+        // C. 两个主操作按钮
         h(
           'div',
-          { 'data-qbp-card': '' },
+          { 'data-qbp-row': '' },
+          h(Btn, {
+            primary: true,
+            large: true,
+            label: busy === '启动服务' ? '启动服务' : '启动服务',
+            busy: busy === '启动服务',
+            disabled: !canStartAll,
+            onClick: () => act('启动服务', () => post('/start-all')),
+            title: '幂等：已运行的服务会跳过；等待 QQ 扫码不算失败',
+          }),
+          h(Btn, {
+            large: true,
+            label: '打开控制台',
+            disabled: busy !== '' || !bridgeHealthy,
+            title: bridgeHealthy ? '用系统浏览器打开桥接控制台（一次性票据）' : '桥接未运行或身份未确认，暂不能打开',
+            onClick: () => act('打开控制台', () => post('/open', { target: 'console' })),
+          }),
+          h('span', { 'data-qbp-meta': '', 'data-qbp-row-end': '' }, panel.nodePath ? `node ${panel.nodePath}` : '未找到 node'),
+        ),
+
+        // D. 服务管理
+        h(
+          Section,
+          { title: '服务管理', note: '只允许停止面板能验证归属的进程' },
           h(
-            'div',
-            { 'data-qbp-card-head': '' },
-            h(Dot, { on: bridgeOpen }),
-            h('span', { 'data-qbp-card-name': '' }, '桥接控制台'),
-            h('span', { 'data-qbp-meta': '' }, bridge ? `端口 ${bridge.port}` : ''),
-          ),
-          h(
-            'div',
-            { 'data-qbp-meta': '' },
-            bridgeOpen
-              ? `运行中${bridge.owned ? '（面板启动）' : '（外部启动，面板不能停止）'}${
-                  bridge?.mode ? ` · 模式 ${bridge.mode}` : ''
-                }${bridge?.dshReady ? ' · DSH 已就绪' : ''}${bridge?.tokenConfigured ? '' : ' · ⚠️ 未配置控制台令牌'}`
-              : '未运行（端口未监听）',
-          ),
-          h(
-            'div',
-            { 'data-qbp-row': '' },
+            Card,
+            null,
             h(
-              'button',
-              {
-                'data-qbp-btn': '',
-                'data-primary': '',
-                disabled: bridgeDisabled || !nodeReady,
-                title: nodeReady ? '' : '找不到 node，无法启动',
+              'div',
+              { 'data-qbp-row': '' },
+              h(Dot, { state: bridge.health }),
+              h('strong', {}, 'QQ Bridge'),
+              h('span', { 'data-qbp-meta': '' }, `端口 ${bridge.port ?? '—'} · ${bridge.owned ? '面板启动' : bridge.running ? '外部启动' : '未运行'}${bridge.ownership?.pid ? ` · pid ${bridge.ownership.pid}` : ''}`),
+              h('span', { 'data-qbp-meta': '', 'data-qbp-row-end': '' }, bridge.mode ? `模式 ${bridge.mode}` : ''),
+            ),
+            bridge.detail ? h('div', { 'data-qbp-meta': '' }, bridge.detail) : null,
+            h(
+              'div',
+              { 'data-qbp-row': '' },
+              h(Btn, {
+                label: '启动',
+                primary: true,
+                disabled: busy !== '' || Boolean(bridge.running),
+                title: bridge.running ? '已在运行' : '启动桥接进程',
                 onClick: () => act('启动桥接', () => post('/start', { service: 'bridge' })),
-              },
-              busy === '启动桥接' ? '启动中…' : '启动桥接',
-            ),
-            h(
-              'button',
-              {
-                'data-qbp-btn': '',
-                'data-danger': '',
-                disabled: busy !== '' || !bridgeOpen || !bridge.owned,
-                title: bridgeOpen && !bridge.owned ? '该实例不是面板启动的' : '',
+              }),
+              h(Btn, {
+                label: '停止',
+                danger: true,
+                disabled: busy !== '' || !bridge.running || !bridge.owned,
+                title: bridge.running && !bridge.owned ? '外部实例：面板不能停止（请回你的终端/启动台）' : '',
                 onClick: () => act('停止桥接', () => post('/stop', { service: 'bridge' })),
-              },
-              '停止桥接',
-            ),
-            h(
-              'button',
-              {
-                'data-qbp-btn': '',
-                disabled: busy !== '' || !bridgeOpen,
-                title: bridgeOpen ? '' : '先启动桥接（端口监听后才能打开）',
+              }),
+              h(Btn, {
+                label: '重启',
+                disabled: busy !== '' || !bridge.running || !bridge.owned,
+                title: bridge.running && !bridge.owned ? '外部实例：面板不能重启' : '停止后重新启动',
+                onClick: () => act('重启桥接', () => post('/restart', { service: 'bridge' })),
+              }),
+              h(Btn, {
+                label: '打开控制台',
+                disabled: busy !== '' || !bridgeHealthy,
                 onClick: () => act('打开控制台', () => post('/open', { target: 'console' })),
-              },
-              '打开控制台',
+              }),
             ),
+            bridge.ownership?.pid && !bridge.owned
+              ? h('div', { 'data-qbp-meta': '', 'data-warn': '' }, '登记的 pid 已无法验证归属（进程退出或 pid 被复用），已按外部实例处理。')
+              : null,
           ),
           h(
-            'div',
-            { 'data-qbp-note': '' },
-            '停止只对面板自己启动的实例生效；终端或启动台启动的桥接请回去停止，避免误杀正在处理的 QQ 消息。',
+            Card,
+            null,
+            h(
+              'div',
+              { 'data-qbp-row': '' },
+              h(Dot, { state: llbot.health }),
+              h('strong', {}, 'LLBot'),
+              h('span', { 'data-qbp-meta': '' }, `端口 ${llbot.port ?? '—'} · ${llbot.owned ? '面板启动' : llbot.running ? '外部启动' : '未运行'}`),
+              h('span', { 'data-qbp-meta': '', 'data-qbp-row-end': '' }, llbot.login?.state === 'online' ? `QQ ${llbot.login.uin || ''} 在线` : llbot.running ? '等待扫码' : ''),
+            ),
+            llbot.detail ? h('div', { 'data-qbp-meta': '' }, llbot.detail) : null,
+            h(
+              'div',
+              { 'data-qbp-row': '' },
+              llbot.startable
+                ? h(Btn, {
+                    label: '启动',
+                    primary: true,
+                    disabled: busy !== '' || llbotRunning,
+                    title: llbotRunning ? '已在运行' : '按 config.json 的固定命令启动 LLBot',
+                    onClick: () => act('启动 LLBot', () => post('/start', { service: 'llbot' })),
+                  })
+                : h(Btn, {
+                    label: '启动',
+                    disabled: true,
+                    title: panel.llbotLaunch?.reason || '需要在 config.json 配置 panel.llbotCommand / panel.llbotQq 才能代管启动',
+                  }),
+              h(Btn, {
+                label: '停止',
+                danger: true,
+                disabled: busy !== '' || !llbot.running || !llbot.owned,
+                title: llbot.running && !llbot.owned ? '外部实例：面板不能停止' : '',
+                onClick: () => act('停止 LLBot', () => post('/stop', { service: 'llbot' })),
+              }),
+              h(Btn, {
+                label: '打开 WebUI',
+                disabled: busy !== '' || !llbot.running,
+                title: llbot.running ? '' : '先启动 LLBot（WebUI 端口监听后才能打开）',
+                onClick: () => act('打开 LLBot WebUI', () => post('/open', { target: 'llbot' })),
+              }),
+            ),
+            h(
+              'div',
+              { 'data-qbp-meta': '' },
+              llbot.startable
+                ? `代管启动命令：${panel.llbotLaunch?.display || ''}${panel.llbotLaunch?.source === 'derived' ? '（由 launcherPath + panel.llbotQq 派生）' : ''}`
+                : `LLBot 是第三方程序，默认由你自己启动。要面板代管：${panel.llbotLaunch?.reason || '在 config.json 配置 panel.llbotCommand'}`,
+            ),
           ),
         ),
 
-        // ── LLBot WebUI ───────────────────────────────────────────────────
+        // E. 运行模式
+        h(
+          Section,
+          { title: '运行模式', note: mode.source ? `当前生效值来源：${mode.source}` : '' },
+          h(
+            Card,
+            null,
+            h(
+              'div',
+              { 'data-qbp-row': '' },
+              h('strong', {}, mode.current ? `当前：${mode.current}` : '当前模式未知'),
+              h('span', { 'data-qbp-meta': '' }, mode.verified ? '已通过桥接实时状态确认' : '未确认（可能只是配置值）'),
+            ),
+            h(
+              'div',
+              { 'data-qbp-seg': '' },
+              (mode.options ?? ['chat', 'reserved', 'reserved2']).map((option) =>
+                h(
+                  'button',
+                  {
+                    'data-qbp-seg-item': '',
+                    ...(mode.current === option ? { 'data-active': '' } : {}),
+                    key: option,
+                    disabled: busy !== '',
+                    title: mode.labels?.[option] ?? option,
+                    onClick: () => setMode(option),
+                  },
+                  option,
+                ),
+              ),
+            ),
+            h(
+              'div',
+              { 'data-qbp-row': '' },
+              h(Btn, {
+                label: advancedModeOpen ? '收起高级模式' : '高级：closed-agent…',
+                disabled: busy !== '',
+                onClick: () => setAdvancedModeOpen((value) => !value),
+              }),
+              mode.current === 'closed-agent'
+                ? h('span', { 'data-qbp-meta': '', 'data-warn': '' }, '当前处于 closed-agent（完整本地工具面）')
+                : null,
+            ),
+            advancedModeOpen
+              ? h(
+                  'div',
+                  { 'data-qbp-msg': '', 'data-kind': 'warn' },
+                  `权限风险：${mode.risk?.['closed-agent'] ?? 'closed-agent 会挂载完整本地工具面'}\n仅 owner 私聊会进入该模式；切换前请确认你信任当前环境。`,
+                  h('div', { 'data-qbp-row': '', style: { marginTop: 8 } },
+                    h(Btn, {
+                      label: mode.current === 'closed-agent' ? '已在 closed-agent' : '仍然切换到 closed-agent',
+                      danger: true,
+                      disabled: busy !== '' || mode.current === 'closed-agent',
+                      onClick: () => setMode('closed-agent'),
+                    }),
+                  ),
+                )
+              : null,
+            h('div', { 'data-qbp-meta': '' }, '切换模式不会改动白名单、模型、工具权限或其它设置。'),
+          ),
+        ),
+
+        // F + G. QQ 专用模型 + 推理强度
+        h(
+          Section,
+          { title: 'QQ 专用模型', note: '只影响 QQ Agent' },
+          h(
+            Card,
+            null,
+            h(
+              'div',
+              { 'data-qbp-model': '' },
+              h(
+                'button',
+                {
+                  'data-qbp-model-trigger': '',
+                  ref: triggerRef,
+                  disabled: busy !== '',
+                  title: catalogLoaded ? '打开 DSH 模型目录' : (model.catalogError || '模型目录不可用'),
+                  onClick: openModelMenu,
+                },
+                h('span', { 'data-qbp-model-provider': '' }, info.providerName || '—'),
+                h('span', { 'data-qbp-model-name': '' }, info.modelName || '（未配置）'),
+                h('span', { 'data-qbp-model-effort': '' }, currentEffort ? `· ${currentEffort}` : (effortSupported ? '· 适配器默认' : '')),
+                h('span', { 'data-qbp-model-chevron': '', ...(menuOpen ? { 'data-open': '' } : {}) }, '▾'),
+              ),
+              h('div', { 'data-qbp-meta': '' },
+                `${current.provider ?? '?'}/${current.model ?? '?'} · 来源 ${model.source ?? '未知'}`,
+                model.catalogError ? ` · 目录：${model.catalogError}` : '',
+              ),
+              !catalogLoaded && model.catalogError
+                ? h('div', { 'data-qbp-meta': '', 'data-warn': '' }, '模型目录读不到时仍显示桥接当前真实配置，但无法列出可选模型。')
+                : null,
+              h(
+                'div',
+                { 'data-qbp-meta': '' },
+                model.scope === 'global'
+                  ? '⚠️ 当前 dsh.modelScope=global：应用模型时会同时写 DSH 全局默认模型（旧行为）'
+                  : '会话作用域：模型只写入 QQ 会话的 model/selection，不写 DSH 全局默认模型。',
+              ),
+            ),
+
+            // G. 推理强度
+            h(
+              'div',
+              { 'data-qbp-row': '' },
+              h('span', { 'data-qbp-meta': '', style: { minWidth: 64 } }, '推理强度'),
+              effortSupported
+                ? configuredEfforts.map((effort) =>
+                    h(
+                      'button',
+                      {
+                        'data-qbp-seg-item': '',
+                        key: effort.id,
+                        ...(currentEffort === effort.id ? { 'data-active': '' } : {}),
+                        disabled: busy !== '',
+                        title: effort.description || `${effort.name}（${effort.id}）`,
+                        onClick: () => selectEffort(effort.id),
+                      },
+                      effort.name || effort.id,
+                    ),
+                  )
+                : h('span', { 'data-qbp-meta': '' }, catalogLoaded
+                    ? '当前模型不支持可配置推理强度（该项已隐藏）'
+                    : '能力未确认：模型目录不可用，无法判断该模型支持哪些推理档位'),
+            ),
+            h(
+              'div',
+              { 'data-qbp-meta': '' },
+              effortSupported
+                ? `档位来自该模型公布的 reasoning.efforts；当前 ${currentEffort || '适配器默认'}${info.defaultEffort ? ` · 模型默认 ${info.defaultEffort}` : ''}${model.effortChecked === false ? ' · 能力未确认' : ''}`
+                : '',
+            ),
+            // 多模态能力：DSH 目录没有 inputModalities 字段，不能按模型名猜。
+            h(
+              'div',
+              { 'data-qbp-meta': '' },
+              '图片/表情能力：DSH 模型目录未公布输入模态元数据 —— 能力未确认（不会按模型名推断）。',
+            ),
+          ),
+        ),
+
+        // H. 高级设置与诊断
         h(
           'div',
-          { 'data-qbp-card': '' },
+          { 'data-qbp-adv': '' },
           h(
-            'div',
-            { 'data-qbp-card-head': '' },
-            h(Dot, { on: llbotOpen }),
-            h('span', { 'data-qbp-card-name': '' }, 'LLBot WebUI'),
-            h('span', { 'data-qbp-meta': '' }, llbot?.port ? `端口 ${llbot.port}` : '未配置'),
+            'button',
+            { 'data-qbp-adv-head': '', onClick: () => setAdvancedOpen((value) => !value) },
+            advancedOpen ? '▾' : '▸',
+            '高级设置与诊断',
+            h('span', { 'data-qbp-meta': '', 'data-qbp-row-end': '' }, '路径 · 端口 · 启动选项 · 日志 · 最近错误 · 进程归属'),
           ),
-          h(
-            'div',
-            { 'data-qbp-meta': '' },
-            llbotOpen ? `运行中${llbot.owned ? '（面板启动）' : '（外部启动）'} · ${llbot.url}` : '未运行（端口未监听）',
-          ),
-          h(
-            'div',
-            { 'data-qbp-row': '' },
-            llbot?.startable
-              ? h(
-                  'button',
-                  {
-                    'data-qbp-btn': '',
-                    disabled: busy !== '' || llbotOpen,
-                    onClick: () => act('启动 LLBot', () => post('/start', { service: 'llbot' })),
-                  },
-                  '启动 LLBot',
-                )
-              : null,
-            llbot?.owned
-              ? h(
-                  'button',
-                  {
-                    'data-qbp-btn': '',
-                    'data-danger': '',
-                    disabled: busy !== '',
-                    onClick: () => act('停止 LLBot', () => post('/stop', { service: 'llbot' })),
-                  },
-                  '停止 LLBot',
-                )
-              : null,
-            h(
-              'button',
-              {
-                'data-qbp-btn': '',
-                disabled: busy !== '' || !llbotOpen,
-                title: llbotOpen ? '' : '先启动 LLBot（WebUI 端口监听后才能打开）',
-                onClick: () => act('打开 LLBot', () => post('/open', { target: 'llbot' })),
-              },
-              '打开 WebUI',
-            ),
-          ),
-          h(
-            'div',
-            { 'data-qbp-note': '' },
-            'LLBot 是第三方程序，默认由你自己启动；面板只在 config.json 配置了 panel.llbotCommand 时才代管启停。',
-          ),
+          advancedOpen
+            ? h(
+                'div',
+                { 'data-qbp-adv-body': '' },
+                h(
+                  'dl',
+                  { 'data-qbp-kv': '' },
+                  h('dt', {}, '桥接仓库'), h('dd', {}, panel.repoDir || '—'),
+                  h('dt', {}, '配置文件'), h('dd', {}, panel.configFile || '—'),
+                  h('dt', {}, 'DSH 地址'), h('dd', {}, dsh.baseUrl || '—'),
+                  h('dt', {}, '桥接端口'), h('dd', {}, String(bridge.port ?? '—')),
+                  h('dt', {}, 'LLBot WebUI'), h('dd', {}, llbot.url || '—'),
+                  h('dt', {}, '控制台令牌'), h('dd', {}, bridge.tokenConfigured ? `已配置 ${bridge.tokenMasked || ''}（不返回完整值）` : '未配置（控制台将拒绝所有请求）'),
+                  h('dt', {}, '面板状态目录'), h('dd', {}, panel.stateDir || '—'),
+                  h('dt', {}, '日志目录'), h('dd', {}, panel.logDir || '—'),
+                  h('dt', {}, '进程归属'), h('dd', {}, bridge.owned ? '桥接：面板启动（登记可验证）' : bridge.running ? '桥接：外部进程（面板不会停止它）' : '桥接：未运行'),
+                  h('dt', {}, '服务管理模式'), h('dd', {}, '面板管理（pid 登记 + 命令行指纹 + 端口三重校验；DSH 重启后仍能识别）'),
+                  h('dt', {}, '启动选项'), h('dd', {}, `LLBot：${panel.llbotLaunch?.available ? panel.llbotLaunch.display : '未配置代管'}${panel.nodePath ? ` · node ${panel.nodePath}` : ''}`),
+                ),
+                h(
+                  'div',
+                  null,
+                  h('div', { 'data-qbp-meta': '', style: { marginBottom: 4 } }, '桥接最近日志'),
+                  h('div', { 'data-qbp-log': '' }, bridge.lastLog || '（暂无面板捕获的日志：外部启动的实例不写面板日志）'),
+                  h('div', { 'data-qbp-meta': '', style: { margin: '10px 0 4px' } }, 'LLBot 最近日志'),
+                  h('div', { 'data-qbp-log': '' }, llbot.lastLog || '（暂无面板捕获的日志）'),
+                ),
+                h(
+                  'div',
+                  null,
+                  h('div', { 'data-qbp-meta': '', style: { marginBottom: 4 } }, '最近错误'),
+                  h('div', { 'data-qbp-log': '' }, panel.lastError || '（无）'),
+                  panel.lastAction
+                    ? h('div', { 'data-qbp-meta': '', style: { marginTop: 6 } },
+                        `最近操作：${panel.lastAction.action} · ${panel.lastAction.ok ? '成功' : '失败'} · ${panel.lastAction.at}`)
+                    : null,
+                ),
+                h(
+                  'div',
+                  { 'data-qbp-row': '' },
+                  h(Btn, { label: '刷新状态', disabled: busy !== '', onClick: () => act('刷新', refresh, { poll: false }) }),
+                  h(Btn, { label: '打开 LLBot WebUI', disabled: busy !== '' || !llbot.running, onClick: () => act('打开 LLBot WebUI', () => post('/open', { target: 'llbot' })) }),
+                ),
+              )
+            : null,
         ),
 
-        message ? h('div', { 'data-qbp-msg': '', 'data-kind': message.kind }, message.text) : null,
-        status?.nodePath ? h('div', { 'data-qbp-note': '' }, `node：${status.nodePath}`) : null,
+        // 操作结果
+        message ? h(Msg, { kind: message.kind, text: message.text, steps: message.steps }) : null,
+
+        // 模型菜单（fixed 定位，避免被设置页滚动容器裁剪）
+        menuOpen && menuRect
+          ? h(ModelMenu, {
+              status,
+              anchorRect: menuRect,
+              current,
+              onPick: selectModel,
+              onClose: () => setMenuOpen(false),
+            })
+          : null,
       )
     }
 
     return {
       inject: ['slots'],
       apply(ctx) {
-        // 加载自检：host 半的 /status.client.seen 靠这一次 ping 置位（不影响任何功能）。
+        // 加载自检：host 半 /status.panel.client.seen 靠这一次 ping 置位（不影响功能）。
         fetch(API + '/ping', {
           method: 'POST',
           credentials: 'same-origin',
@@ -273,6 +1008,8 @@ window.__ModuleLoader__.load({
           body: '{}',
         }).catch(() => {})
 
+        // 样式：先移除旧节点（HMR 会重复 apply）。
+        for (const stale of document.querySelectorAll('style[data-plugin-css="qq-bridge-panel"]')) stale.remove()
         const style = document.createElement('style')
         style.setAttribute('data-plugin-css', 'qq-bridge-panel')
         style.textContent = CSS

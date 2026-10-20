@@ -2,9 +2,11 @@
 
 ## 运行模式（QQ 桥接四模式）
 
-模式由**桥接控制台**（默认 `http://127.0.0.1:3100`）顶部的模式按钮切换，也可直接改 DSH 设置的 `qq-mode` 命名空间；
-控制台会**同时**写穿到 DSH 设置与本地 `qq-bridge/state/mode.json`，两者保持一致。
-（DSH 设置页目前仍**没有** `qq-mode` 卡片——模式切换只在控制台；设置里的「QQ 桥接」页（`plugins/qq-bridge-panel`）只负责端口状态/启停/打开控制台与 LLBot，不承载模式切换。详见 docs/guides/DSH_SETUP.md。）
+模式可在两处切换：**桥接控制台**（默认 `http://127.0.0.1:3100`）顶部按钮，或 DSH **设置 → QQ 桥接** 页的运行模式区
+（该页由 `plugins/qq-bridge-panel` 提供，内部优先调桥接 `POST /api/mode`，桥接不在时退回写 DSH `qq-mode` 设置命名空间，并**回读校验**真实生效值）。
+桥接会**同时**写穿到 DSH 设置与本地 `qq-bridge/state/mode.json`，两者保持一致。
+面板**不拥有** `qq-mode` 命名空间（它仍由 `qq-mode-console` 提供），所以两者并存、互不覆盖；切换模式不会改动白名单、模型或工具权限。
+⚠️ `closed-agent`（完整本地工具面）在面板里收在「高级」里并明确提示权限风险。详见 docs/guides/DSH_SETUP.md 与 docs/guides/QQ_PANEL.md。
 桥接每 5 秒读取一次；控制台切换立即应用。会话持久化记录创建时的模式、preset 和管理员边界，权限变化时自动撤销旧会话映射和二代 token，并在下次消息到达时重建，避免继续使用旧的高权限 preset。升级前没有这些权限元数据的旧会话也会重建一次，历史仍保留在 DSH。
 全新安装运行 `scripts/setup-dsh.mjs` 后，DSH 设置与本地兜底默认均为 `reserved2`；若已存在 `state/mode.json` 或 DSH 设置旧值，脚本不会覆盖。
 
