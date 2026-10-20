@@ -946,7 +946,7 @@ window.__ModuleLoader__.load({
                   h('dt', {}, 'DSH 地址'), h('dd', {}, dsh.baseUrl || '—'),
                   h('dt', {}, '桥接端口'), h('dd', {}, String(bridge.port ?? '—')),
                   h('dt', {}, 'LLBot WebUI'), h('dd', {}, llbot.url || '—'),
-                  h('dt', {}, '控制台令牌'), h('dd', {}, bridge.tokenConfigured ? `已配置 ${bridge.tokenMasked || ''}（不返回完整值）` : '未配置（控制台将拒绝所有请求）'),
+                  h('dt', {}, '控制台令牌'), h('dd', {}, bridge.tokenConfigured ? (bridge.tokenMasked || '已配置') : '未配置（控制台将拒绝所有请求）'),
                   h('dt', {}, '面板状态目录'), h('dd', {}, panel.stateDir || '—'),
                   h('dt', {}, '日志目录'), h('dd', {}, panel.logDir || '—'),
                   h('dt', {}, '进程归属'), h('dd', {}, bridge.owned ? '桥接：面板启动（登记可验证）' : bridge.running ? '桥接：外部进程（面板不会停止它）' : '桥接：未运行'),

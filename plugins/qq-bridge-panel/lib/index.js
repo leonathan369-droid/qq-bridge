@@ -121,7 +121,8 @@ function makeCatalogProvider(ctx) {
     if (!controller || typeof controller.modelCatalog !== 'function') {
       throw new Error('宿主没有 sessionController.modelCatalog（DSH 版本过旧？）')
     }
-    const catalog = controller.modelCatalog()
+    // buildModelCatalog 是 async（要逐个 provider 列模型 + resolveModelInfo），必须 await。
+    const catalog = await controller.modelCatalog()
     if (!catalog || !Array.isArray(catalog.groups)) throw new Error('模型目录返回结构异常')
     return catalog
   }
@@ -179,7 +180,7 @@ function makeSessionModelApplier(ctx, log) {
     }
     // 1) 模型必须在目录里（= 可用）。目录不可读时不做这个判断，交给 resolveCallConfig。
     try {
-      const catalog = typeof controller.modelCatalog === 'function' ? controller.modelCatalog() : null
+      const catalog = typeof controller.modelCatalog === 'function' ? await controller.modelCatalog() : null
       if (catalog?.groups) {
         const group = catalog.groups.find((g) => g?.id === provider)
         const entry = group?.models?.find((m) => m?.id === model)
