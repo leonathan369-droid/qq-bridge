@@ -10,7 +10,7 @@
 
 把 QQ 消息接入 DSH agent：QQ 好友/群发来的消息会变成 DSH 会话里的用户消息，agent 的回复（含提问、工具审批）会发回 QQ。
 
-> ⚠️ **当前版本 `v0.2.0`，适配 DSH 0.2.0-rc.2**（在该版本上逐项实测：`npm run verify:adaptation`）。
+> ⚠️ **当前版本 `v0.3.0`，适配 DSH 0.2.0-rc.2**（在该版本上逐项实测：`npm run verify:adaptation`）。
 > 鉴权用 `~/.dsh` 里持久化的浏览器会话签名密钥**离线铸造 Cookie** —— DSH 0.1.7 起进程启动 token
 > 只存在于内存、不再落盘，旧版「从 guard 日志里读 token」的方式已失效。agent preset 是 DSH 0.1.7 起的
 > `@deepseek-ai/dsh-agent-preset` Cordis 行（`~/.dsh/.agent-presets/` 目录机制已废）。协议代次
@@ -28,6 +28,13 @@
 > 以 `projections[<id>].values.inbox` 为回退形状，并补了两条回归网。
 > 同一轮还按 0.2.0 的真实工具清单重新对账了 QQ 安全守卫（新增 15 个必须隐藏的工具名，
 > 含全局层默认启用的 `read_mcp_resource`、`plugin_manager`、`subagent_codex` 等）。
+>
+> **v0.3.0（2026-10-21）**：DSH 设置页「QQ 桥接」升级为**控制中心** —— 四项真实健康检查
+> （桥接/LLBot/QQ 登录/DSH 连接）、一键启动（幂等、等待扫码不算失败）、进程归属三重校验、
+> 运行模式、**QQ 专用模型与推理强度**（读 DSH 真实模型目录，默认**会话作用域**：不写 DSH
+> 全局默认模型）、一次性票据打开控制台、可折叠诊断。回归 **32/32**；作用域验收脚本
+> `npm run verify:panel-isolation`。详见 [docs/guides/QQ_PANEL.md](docs/guides/QQ_PANEL.md)
+> 与 [docs/RELEASE-v0.3.0.md](docs/RELEASE-v0.3.0.md)。
 >
 > 逐条改动说明见 [docs/guides/DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md)。
 >

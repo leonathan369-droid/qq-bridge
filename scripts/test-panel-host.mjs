@@ -71,7 +71,7 @@ function readBody(req) {
 }
 
 /** 假桥接控制台：行为可按测试用例覆盖。 */
-async function startFakeBridge({ mode = 'reserved2', dshReady = true, token = 'test-token', supportTicket = true, modelState } = {}) {
+async function startFakeBridge({ mode = 'reserved2', dshReady = true, token = 'test-token', supportTicket = true, modelPostSupported = true, modelState } = {}) {
   const calls = []
   const state = {
     mode,
@@ -114,6 +114,10 @@ async function startFakeBridge({ mode = 'reserved2', dshReady = true, token = 't
       return
     }
     if (url.pathname === '/api/dsh/model' && req.method === 'POST') {
+      if (!modelPostSupported) {
+        json({ ok: false, error: 'not found' }, 404)
+        return
+      }
       state.provider = String(body?.provider ?? state.provider)
       state.model = String(body?.model ?? state.model)
       state.reasoningEffort = String(body?.reasoningEffort ?? state.reasoningEffort)
@@ -493,6 +497,21 @@ try {
     assert.equal(out.globalSideEffect, false)
     const call = fakeBridge.calls.filter((c) => c.path === '/api/dsh/model' && c.method === 'POST').at(-1)
     assert.deepEqual(call.body, { provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' })
+  })
+
+  await check('setModel：桥接在线但版本旧（无 POST /api/dsh/model）时写 config.json + 明确提示需重启桥接', async () => {
+    const fakeBridge = await startFakeBridge({ mode: 'reserved2', modelPostSupported: false })
+    cleanup.push(fakeBridge)
+    const saved = JSON.parse(await readFile(path.join(repoDir, 'config.json'), 'utf8'))
+    saved.consolePort = fakeBridge.port
+    await writeFile(path.join(repoDir, 'config.json'), JSON.stringify(saved, null, 2), 'utf8')
+    const local = makeManager()
+    const out = await local.setModel({ provider: 'deepseek-official', model: 'deepseek-flash', reasoningEffort: 'max' })
+    assert.equal(out.ok, true, out.message)
+    assert.equal(out.pendingRestart, true, '旧版桥接不能被假装成已生效')
+    assert.match(out.message, /旧版桥接没有 POST \/api\/dsh\/model/)
+    const file = JSON.parse(await readFile(path.join(repoDir, 'config.json'), 'utf8'))
+    assert.equal(file.dsh.model, 'deepseek-flash')
   })
 
   await check('setModel：桥接未运行时写 config.json（权限 0600，下次启动生效）', async () => {

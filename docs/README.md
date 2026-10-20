@@ -13,6 +13,7 @@
 | --- | --- | --- |
 | [guides/PROJECT_GUIDE.md](guides/PROJECT_GUIDE.md) | **权威项目说明书**（113 KB / 1450+ 行）：架构、内外核划分、数据流、配置全解、安全机制、调试与改进指南，含 2026-08-20 ~ 2026-09-11 的逐轮更新记录 | ✅ **唯一权威版本**（另一份同名精简版已归档到 legacy，见下） |
 | [guides/DSH_SETUP.md](guides/DSH_SETUP.md) | DSH 端安装说明：`qq-chat` / `qq-chat-v2` preset 与三个 MCP server 怎么挂到目标设备的 DSH 上 | ✅ |
+| [RELEASE-v0.3.0.md](RELEASE-v0.3.0.md) | **v0.3.0 发布准备清单**：名称/版本/兼容性、首次安装、升级迁移、卸载与精确回滚、发布包禁止内容、第三方许可义务、已知限制 | ✅ **2026-10-21 新增** |
 | [guides/QQ_PANEL.md](guides/QQ_PANEL.md) | **「设置 → QQ 桥接」控制中心**：页面结构、四状态真实健康检查、一键启动编排、进程归属、一次性票据、运行模式、QQ 专用模型与推理强度（会话作用域）、安全边界、安装/升级/卸载 | ✅ **2026-10-21 新增**（v0.3.0） |
 | guides/VOICE.md（**不随仓库发布**） | 语音发送全解：独立工具（`voice-tool/` 的图形界面与命令行）、桥接 CLI、AI 工具、控制台面板，以及**工具拆出后的配置解析顺序** | ✅ 2026 整理时已更新（工具移到上一级 `voice-tool/`） |
 | [guides/TOKEN_USAGE_CONSOLE.md](guides/TOKEN_USAGE_CONSOLE.md) | 控制台「令牌与花费」看板：数据来源、计价口径（峰谷分时）、API、配置 | ✅ |

@@ -1280,6 +1280,12 @@ export function createServiceManager({
         body: { provider, model, ...(effort ? { reasoningEffort: effort } : {}) },
         timeoutMs: 10000,
       })
+      // 旧版桥接没有 POST /api/dsh/model（404/405）时，退化成「写 config.json + 提示重启桥接」：
+      // 这样面板可以单独升级、不必和桥接同一时刻重启，但绝不假装已经对正在运行的桥接生效。
+      const bridgeLacksEndpoint = res.status === 404 || res.status === 405
+      if (bridgeLacksEndpoint) {
+        return await writeConfigModel({ config, provider, model, effort, found, catalogError, reason: '旧版桥接没有 POST /api/dsh/model' })
+      }
       if (!res.ok || !res.json?.ok) {
         return { ok: false, message: `桥接拒绝修改模型：${res.json?.error ?? res.json?.message ?? res.error ?? `HTTP ${res.status}`}` }
       }
@@ -1297,6 +1303,11 @@ export function createServiceManager({
       }
     }
     // 桥接未运行：直接写 config.json（桥接下次启动生效）。保留 0600 权限与原子替换。
+    return writeConfigModel({ config, provider, model, effort, found, catalogError, reason: '桥接未运行' })
+  }
+
+  /** 把模型写进桥接 config.json（原子替换 + 保留权限位）。 */
+  async function writeConfigModel({ config, provider, model, effort, found, catalogError, reason }) {
     try {
       const file = config.loaded.config
       if (!file) return { ok: false, message: config.loaded.error || '读不到 config.json' }
@@ -1328,7 +1339,7 @@ export function createServiceManager({
         modelScope: config.modelScope,
         globalSideEffect: config.modelScope === 'global',
         pendingRestart: true,
-        message: `桥接未运行：已写入 config.json，桥接下次启动时生效（${provider}/${model}）`,
+        message: `${reason}：已写入 config.json，桥接下次启动时生效（${provider}/${model}）`,
       }
     } catch (error) {
       return { ok: false, message: `写 config.json 失败：${error?.message ?? error}` }
