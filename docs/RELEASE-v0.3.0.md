@@ -80,6 +80,15 @@ node scripts/setup-dsh.mjs && # 重启 DSH
 > 不要用 `git reset --hard` / `git checkout -- .`：工作区可能还有其它未提交成果。
 > 桥接侧的新接口对旧面板**向前兼容**（旧面板继续用 `?token=` 打开），所以只回滚面板是安全的。
 
+## 5.5 生成物与隐私（发布前必须确认）
+
+| 项 | 规则 |
+| --- | --- |
+| `plugins/qq-agent-presets/presets/*.patch.yml` | **生成物，不进版本控制**（`.gitignore`）。内含本机 node 路径与仓库路径，由 `setup-dsh.mjs` 在安装时生成。源文件里只有占位符 `__QQ_BRIDGE_NODE__` / `__QQ_BRIDGE_ROOT__`。 |
+| `docs/images/*.png` | 仅用于 README 展示；截图中的路径/QQ 号已脱敏为示例值（`/opt/...`、`100000000`）。 |
+| 仓库内不得出现的 | 作者本机绝对路径（`/Users/<name>`、`/home/<name>`）、真实 QQ 号/群号、控制台令牌、LLBot 密码、聊天记录、学习数据、`state/`、`config.json`。 |
+| 提交历史 | 发布前用 `git filter-branch`/`filter-repo` 清理历史里的本机路径与个人 committer 邮箱（本仓库发布时已做过一次）。发布前可复查：`git log -p --all | grep -E "/Users/[a-z]"`。 |
+
 ## 6. 发布包内容检查（必做）
 
 发布 zip / Release 资产前逐项确认**不包含**：

@@ -37,7 +37,10 @@ const DEFAULT_RULES = {
     // 报它属于纯粹的噪音（会让整个扫描被无视）。所以只报"含非 hex 字符的长串"。
     { name: '疑似令牌/密钥（高熵串）', pattern: '(?<![0-9a-zA-Z])[0-9a-zA-Z_-]{32,}(?![0-9a-zA-Z])', flags: '', requireNonHex: true },
     // 凭据赋值：**空值/占位符不算**（`accessToken: ''` 是模板常态，报它只会制造噪音）。
-    { name: '疑似凭据赋值（有实际值）', pattern: '(?:access[_-]?token|api[_-]?key|password|passwd|secret)["\']?\\s*[:=]\\s*["\']?[A-Za-z0-9_\\-./+=]{12,}', flags: 'i' },
+    // 注意尾部 `(?![\w.$]*\()`：排除「把函数/方法名赋给同名变量」这类误报
+    // （例如 `const password = llbotWebuiPasswordOf(config)` —— RHS 是函数调用，不是凭据）。
+    // 真实凭据都是字符串字面量，带引号，不会被这条负向断言放过。
+    { name: '疑似凭据赋值（有实际值）', pattern: '(?:access[_-]?token|api[_-]?key|password|passwd|secret)["\']?\\s*[:=]\\s*["\']?(?![\\w.$]*\\()(?![\\w.$]*\\bOf\\b)[A-Za-z0-9_\\-./+=]{12,}', flags: 'i' },
     { name: '私钥头', pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----', flags: '' },
     { name: '带凭据的 URL', pattern: 'https?://[^/\\s:@]+:[^/\\s:@]+@', flags: 'i' },
   ],

@@ -2,13 +2,27 @@
 
 > Connect QQ messages to DeepSeek Harness (DSH) agents: QQ friends/groups become DSH conversations, and agent replies (including questions and tool approvals) are sent back to QQ.
 
-> ⚠️ **Current release `v0.2.0`, targets DSH 0.2.0-rc.2** (verified item by item on that version; run `npm run verify:adaptation`). It uses the persistent local signing key to **mint the session Cookie offline**, slash RPC endpoints and the `/api/remote.mux` event stream — a protocol generation introduced in DSH `0.1.2-alpha.1`, incompatible with the older dot-endpoint protocol. Reading the launch token out of the old guard logs has not worked since DSH 0.1.7 (the token is generated per process and never written to disk). Agent presets are `@deepseek-ai/dsh-agent-preset` Cordis rows since DSH 0.1.7 (the `~/.dsh/.agent-presets/` directory mechanism is gone). On **DSH `0.1.1-rc.2` or earlier**, use tag [`v0.1.0`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.0); for **DSH 0.1.5-rc.1** use [`v0.1.5`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.5); for **DSH 0.1.7-rc.2** use [`v0.1.7`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.7).
+> ⚠️ **Current release `v0.3.0`, targets DSH 0.2.0-rc.2** (verified item by item on that version; run `npm run verify:adaptation`). It uses the persistent local signing key to **mint the session Cookie offline**, slash RPC endpoints and the `/api/remote.mux` event stream — a protocol generation introduced in DSH `0.1.2-alpha.1`, incompatible with the older dot-endpoint protocol. Reading the launch token out of the old guard logs has not worked since DSH 0.1.7 (the token is generated per process and never written to disk). Agent presets are `@deepseek-ai/dsh-agent-preset` Cordis rows since DSH 0.1.7 (the `~/.dsh/.agent-presets/` directory mechanism is gone). On **DSH `0.1.1-rc.2` or earlier**, use tag [`v0.1.0`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.0); for **DSH 0.1.5-rc.1** use [`v0.1.5`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.5); for **DSH 0.1.7-rc.2** use [`v0.1.7`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.7).
 >
 > The default branch `main` **is** this version — a plain `git clone` gets it, no branch switching needed.
 
 For the detailed Chinese guide, see **[docs/guides/PROJECT_GUIDE.md](docs/guides/PROJECT_GUIDE.md)**.
 The documentation index (one line per doc, with "still current?" notes) is **[docs/README.md](docs/README.md)**;
 the repository/folder and script-naming conventions are in **[docs/FOLDER_MAP.md](docs/FOLDER_MAP.md)**.
+
+## Screenshots
+
+Once installed into DeepSeek Harness, **Settings → QQ Bridge** is a complete local control centre: four real health checks, one-click start, process ownership, run mode, a QQ-only model picker with reasoning effort, and diagnostics — all on one page.
+
+![QQ Bridge control centre](docs/images/panel-overview.png)
+
+**QQ-only model / reasoning effort**: the model catalog, provider groups, search and effort levels all come from DSH itself; the selection applies to the QQ session only and **never rewrites the DSH global default model**.
+
+![QQ-only model and reasoning effort](docs/images/panel-model.png)
+
+![Model picker (grouped by provider, searchable)](docs/images/panel-model-menu.png)
+
+> Paths / QQ numbers in the screenshots are placeholders (sanitised); your own configuration is shown at runtime.
 
 ## Architecture
 

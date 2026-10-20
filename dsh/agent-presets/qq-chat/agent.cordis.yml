@@ -247,26 +247,26 @@
   config:
     serverName: snowluma
     transport: stdio
-    command: '/Users/you/.hermes/node/bin/node'
+    command: '__QQ_BRIDGE_NODE__'
     args:
-      - '/Users/you/DSH workspace/qq-bridge-upstream/src/mcp-snowluma-safe.js'
+      - '__QQ_BRIDGE_ROOT__/src/mcp-snowluma-safe.js'
     toolCallTimeoutMs: 725000
 - id: mcp-snowluma-host
   name: '@deepseek-ai/dsh-mcp-client'
   config:
     serverName: snowluma-host
     transport: stdio
-    command: '/Users/you/.hermes/node/bin/node'
+    command: '__QQ_BRIDGE_NODE__'
     args:
-      - '/Users/you/DSH workspace/qq-bridge-upstream/src/mcp-host-server.js'
+      - '__QQ_BRIDGE_ROOT__/src/mcp-host-server.js'
 - id: mcp-web-search-safe
   name: '@deepseek-ai/dsh-mcp-client'
   config:
     serverName: web-search-safe
     transport: stdio
-    command: '/Users/you/.hermes/node/bin/node'
+    command: '__QQ_BRIDGE_NODE__'
     args:
-      - '/Users/you/DSH workspace/qq-bridge-upstream/src/mcp-web-search-safe.js'
+      - '__QQ_BRIDGE_ROOT__/src/mcp-web-search-safe.js'
     env:
       QQ_BRIDGE_ALLOW_PROXY_FAKE_IP: '1'
 

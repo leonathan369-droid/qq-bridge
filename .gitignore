@@ -69,3 +69,9 @@ audio/
 
 # macOS 目录元数据
 .DS_Store
+
+# ── 每台机器生成的产物（不进版本控制）──────────────────────────────────────
+# 这两个 patch 由 setup-dsh.mjs 从 dsh/agent-presets/<preset>/agent.cordis.yml 生成，
+# 里面含**本机真实绝对路径**（node 可执行文件、仓库根）。提交它们既会泄露作者路径，
+# 又会在别人机器上指向错误位置 —— 所以按生成物忽略，安装时生成。
+plugins/qq-agent-presets/presets/*.patch.yml

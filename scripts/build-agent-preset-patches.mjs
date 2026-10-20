@@ -48,6 +48,42 @@ const RELATIVE_ROW_REWRITES = new Map([
 ]);
 
 export const BUNDLE_DIR = path.join(REPO_ROOT, 'plugins', 'qq-agent-presets');
+
+// ── 可移植性：源文件里不写死本机绝对路径 ────────────────────────────────────
+//
+// 为什么：preset 源（dsh/agent-presets/<preset>/agent.cordis.yml）会带 3 条 MCP 行，
+// 每条都需要「node 可执行文件的绝对路径」和「本仓库里 MCP server 脚本的绝对路径」。
+// 早期这两处直接写成了作者本机的路径（/Users/<名字>/...），于是：
+//   ① 公开仓库会泄露作者用户名与本机目录结构（隐私）；
+//   ② 别人 clone 下来跑 setup-dsh 时，生成的 preset 会指向**根本不存在的路径**，
+//      MCP server 一个都起不来（可用性）。
+// 现在源里只写占位符，渲染 patch 时再替换成本机真实路径：
+//   __QQ_BRIDGE_NODE__ → process.execPath（当前跑 setup 的 Node）
+//   __QQ_BRIDGE_ROOT__ → 本仓库根目录
+export const PRESET_PLACEHOLDERS = Object.freeze({
+  __QQ_BRIDGE_NODE__: () => process.execPath,
+  __QQ_BRIDGE_ROOT__: () => REPO_ROOT,
+});
+
+/** 把一段文本里的占位符替换成本机真实值（用于最终写进 patch 的 YAML 字符串）。 */
+export function resolvePresetPlaceholders(text, overrides = {}) {
+  let out = String(text ?? '');
+  for (const [token, factory] of Object.entries(PRESET_PLACEHOLDERS)) {
+    const value = overrides[token] ?? factory();
+    out = out.split(token).join(value);
+  }
+  return out;
+}
+
+/** 递归把结构里所有字符串的占位符替换（测试对比「源 vs 产物」时用）。 */
+export function resolvePresetPlaceholdersDeep(value, overrides = {}) {
+  if (typeof value === 'string') return resolvePresetPlaceholders(value, overrides);
+  if (Array.isArray(value)) return value.map((item) => resolvePresetPlaceholdersDeep(item, overrides));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, resolvePresetPlaceholdersDeep(v, overrides)]));
+  }
+  return value;
+}
 export function patchFileFor(name) {
   return path.join(BUNDLE_DIR, 'presets', `${name}.patch.yml`);
 }
@@ -138,7 +174,9 @@ export function renderPatch(name) {
     '',
   ].join('\n');
   // lineWidth: -1 —— 长行不折行，产物与源逐字对应，diff 只反映真实改动。
-  return `${header}${yaml.dump([{ insert: [row] }], { lineWidth: -1, noRefs: true })}`;
+  // 占位符在这里一次性替换成本机真实路径；patch 文件本身**不进版本控制**（见 .gitignore），
+  // 每台机器 setup 时生成，因此不会泄露作者的路径、也不会在别人机器上指向错误位置。
+  return resolvePresetPlaceholders(`${header}${yaml.dump([{ insert: [row] }], { lineWidth: -1, noRefs: true })}`);
 }
 
 /** 生成（或校验）全部 patch 文件。@returns {{file:string,changed:boolean}[]} */

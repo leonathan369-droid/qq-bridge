@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 import {
   BUNDLE_DIR, GUARD_SPECIFIER, PRESETS, REPO_ROOT,
-  buildPatches, patchFileFor, presetRowId,
+  buildPatches, patchFileFor, presetRowId, resolvePresetPlaceholdersDeep,
 } from './build-agent-preset-patches.mjs';
 
 let failures = 0;
@@ -27,9 +27,26 @@ const load = (p) => yaml.load(read(p));
 
 console.log('## 1. 产物与源不漂移（--check 语义）');
 {
+  // 产物是**生成物且不进版本控制**（每台机器的 node 路径/仓库路径不同，见 .gitignore）。
+  // 所以这里先按当前机器生成一次，再跑 --check 验证「同样的输入必然产生同样的输出」。
+  buildPatches({ log: () => {} });
   const results = buildPatches({ check: true, log: () => {} });
   for (const { file, changed } of results) {
     ok(!changed, `${path.relative(REPO_ROOT, file)} 与源一致（不一致请跑 node scripts/build-agent-preset-patches.mjs）`);
+  }
+}
+
+console.log('## 1b. 可移植性/隐私：源里不写死本机路径，产物里不留占位符');
+{
+  for (const name of PRESETS) {
+    const sourceText = read(path.join(REPO_ROOT, 'dsh', 'agent-presets', name, 'agent.cordis.yml'));
+    ok(!/\/(Users|home)\/[^'"\s]+/.test(sourceText.replace(/__QQ_BRIDGE_ROOT__/g, '')),
+      `${name}: 源文件不含本机绝对路径（只用 __QQ_BRIDGE_NODE__ / __QQ_BRIDGE_ROOT__ 占位符）`);
+    ok(sourceText.includes('__QQ_BRIDGE_NODE__') && sourceText.includes('__QQ_BRIDGE_ROOT__'),
+      `${name}: 源文件使用可移植占位符`);
+    const generated = read(patchFileFor(name));
+    ok(!generated.includes('__QQ_BRIDGE_'), `${name}: 生成产物里所有占位符都已替换成本机真实路径`);
+    ok(generated.includes(REPO_ROOT), `${name}: 生成产物指向当前仓库根（别人机器 setup 时会指向他自己的路径）`);
   }
 }
 
@@ -50,7 +67,8 @@ for (const name of PRESETS) {
 
   // 与源行列表逐字对比：只允许守卫行的 name 被改写。
   const source = load(path.join(REPO_ROOT, 'dsh', 'agent-presets', name, 'agent.cordis.yml'));
-  const expected = structuredClone(source);
+  // 源里是占位符，产物里是本机真实路径：对比前把期望值也展开成本机值。
+  const expected = resolvePresetPlaceholdersDeep(structuredClone(source));
   for (const r of expected) if (r.name === './qq-tool-restrict.mjs') r.name = GUARD_SPECIFIER;
   assert.deepEqual(row.config.plugins, expected, `${name}: config.plugins 必须与 agent.cordis.yml 完全一致（守卫名除外）`);
   ok(true, `${name}: config.plugins 与 agent.cordis.yml 逐字一致（${expected.length} 行）`);

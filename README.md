@@ -50,6 +50,22 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接进程 ──�
 
 ## 项目展示
 
+### 界面预览
+
+装进 DeepSeek Harness 后，**设置 → QQ 桥接** 是完整的本地控制中心：四项真实健康检查、一键启动、服务归属、运行模式、QQ 专用模型与推理强度、诊断，全在一页。
+
+![QQ 桥接控制中心](docs/images/panel-overview.png)
+
+**QQ 专用模型 / 推理强度**：模型目录、Provider 分组、搜索、推理档位全部来自 DSH 的真实能力；**只作用于 QQ 会话，不改 DSH 全局默认模型**。
+
+![QQ 专用模型与推理强度](docs/images/panel-model.png)
+
+![模型选择菜单（按 Provider 分组 + 搜索）](docs/images/panel-model-menu.png)
+
+> 截图中路径 / QQ 号为示例值（已脱敏）；运行时显示你自己的配置。
+
+### 介绍视频
+
 📽️ [AI 仿真群友 - 项目介绍视频](https://github.com/Derpyu520/qq-bridge/releases/download/v0.1.5/project-intro.mp4)（约 11 MB）
 
 > 视频改由 **Release 附件**托管，不在仓库里——只想安装桥接的人不必再下载这 11 MB（它此前占整个仓库体积的 88%）。
@@ -57,7 +73,7 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接进程 ──�
 ## 架构
 
 - **QQ 侧**：`@snowluma/sdk` 的 `SnowLumaWebSocketClient`（OneBot v11 WebSocket 客户端，自动重连）
-- **DSH 侧**：适配 DSH 0.1.2 起引入、**0.2.0-rc.2 上逐项复核**的协议——用本机持久化签名密钥铸造会话 Cookie 鉴权、`/api/<namespace>/<method>` 斜杠 RPC、`/api/remote.mux` + `session/follow` 事件流（`session/control` 的队列读 `value.projections[<id>].values.inbox`，另有一元 `session/projections` 主路径）；复用 `AbstractApiClient` 传输层但不再依赖旧版 zod value schema。会话模型由桥接按 `config.json` 的 `dsh.model` 逐会话 `session.selectModel` 固定（默认 `deepseek-flash` = DeepSeek-V41-Flash，多模态）
+- **DSH 侧**：适配 DSH 0.1.2 起引入、**0.2.0-rc.2 上逐项复核**的协议——用本机持久化签名密钥铸造会话 Cookie 鉴权、`/api/<namespace>/<method>` 斜杠 RPC、`/api/remote.mux` + `session/follow` 事件流（`session/control` 的队列读 `value.projections[<id>].values.inbox`，另有一元 `session/projections` 主路径）；复用 `AbstractApiClient` 传输层但不再依赖旧版 zod value schema。QQ 会话的模型由桥接按 `config.json` 的 `dsh.provider/model/reasoningEffort` 通过**面板 host 半的会话局部应用**固定（`sessionController.agents.selectForNextRequest`，等价官方 `session/selectModel` 去掉写全局默认那一步；默认 `deepseek-flash` = DeepSeek-V41-Flash，多模态）。面板里切换模型即改这一处；`dsh.modelScope=global` 才会回到会写 DSH 全局默认的旧行为
 - **agent 自主收发 QQ**：DSH 的 MCP 客户端（`~/.dsh/profiles/web/cordis.patch.yml` 配置）接入三个 MCP server：
   - `snowluma`（桥接自带 `src/mcp-snowluma-safe.js`）：QQ 动作**安全子集**（查状态/查群/查消息/发消息，发送强制白名单；发送工具支持可选 `replyToMessageId` 引用回复）
   - `snowluma-host`（桥接自带 `src/mcp-host-server.js`）：**只有** `snowluma_status`（只读探活 `get_login_info`）。
@@ -132,6 +148,11 @@ npm install        # 安装依赖（postinstall 会自动修补 @snowluma/sdk �
 > ⚠️ `allowAllWhenEmpty: true` 表示「白名单没填就全部放行」——把 agent 接入 QQ 等于把账号控制权交给了模型，建议先填白名单。
 
 ### DSH 端安装（必做：装 preset + 挂 MCP）
+
+> `plugins/qq-agent-presets/presets/*.patch.yml` 是**生成物**（不进版本控制）：它们内含本机真实的
+> node 路径与仓库路径，由 `node scripts/setup-dsh.mjs` 在安装时从
+> `dsh/agent-presets/<preset>/agent.cordis.yml` 生成。这样既不会在仓库里泄露作者的路径，
+> 也能保证换一台机器后 MCP server 指向正确位置。
 
 桥接和控制台能跑起来还不够，DSH 端还需要安装两个聊天 preset（`qq-chat` / `qq-chat-v2`）并挂载 MCP。**单机新装同样必须执行这一步**（不是只有「另一台设备」才需要），装完还要**重启 DSH**：
 
