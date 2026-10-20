@@ -115,19 +115,30 @@ window.__ModuleLoader__.load({
 [data-qbp-model-effort]{font-size:11px;color:var(--dsw-alias-label-tertiary,#8b8f96);flex:none;}
 [data-qbp-model-chevron]{margin-left:auto;flex:none;color:var(--dsw-alias-label-caption,#8b8f96);transition:transform .12s;}
 [data-qbp-model-chevron][data-open]{transform:rotate(180deg);}
+/* 菜单表面沿用 DSH 自己的 MenuSurface token（亮/暗由 body[data-ds-dark-theme] 决定，
+   不再靠 prefers-color-scheme 猜 —— 之前 UNSET 的 --dsw-alias-bg-elevated 让浅色主题下
+   菜单底色也跟着系统走了深色）。 */
 [data-qbp-menu]{position:fixed;z-index:1200;display:flex;flex-direction:column;width:min(440px,calc(100vw - 32px));
   max-height:min(420px,calc(100vh - 120px));padding:4px;border-radius:var(--dsw-radius-lg,12px);
-  border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.28));background:var(--dsw-alias-bg-elevated,#ffffff);
-  box-shadow:0 12px 32px rgba(0,0,0,.18);overflow:hidden;color:inherit;}
-@media (prefers-color-scheme:dark){[data-qbp-menu]{background:var(--dsw-alias-bg-elevated,#24262b);}}
-[data-qbp-menu][data-theme="dark"]{background:var(--dsw-alias-bg-elevated,#24262b);}
+  border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.28));
+  background:var(--dsw-menu-surface-fill,rgba(248,249,250,.96));
+  -webkit-backdrop-filter:var(--dsw-menu-backdrop-filter,blur(20px));
+  backdrop-filter:var(--dsw-menu-backdrop-filter,blur(20px));
+  box-shadow:var(--dsw-elevation-prominent,0 12px 32px rgba(0,0,0,.18));overflow:hidden;color:inherit;}
 [data-qbp-search-row]{flex:none;display:flex;padding:2px 2px 4px;}
 [data-qbp-search]{flex:1;appearance:none;font:inherit;font-size:12px;padding:6px 8px;border-radius:8px;
   border:1px solid transparent;background:rgba(128,128,128,.1);color:inherit;outline:none;}
 [data-qbp-search]:focus{border-color:var(--dsw-alias-state-business-primary,#3b82f6);}
 [data-qbp-menu-body]{flex:1;min-height:0;overflow-y:auto;}
-[data-qbp-group-label]{position:sticky;top:0;z-index:1;font-size:10px;text-transform:uppercase;letter-spacing:.04em;
-  color:var(--dsw-alias-label-tertiary,#8b8f96);padding:6px 8px 3px;background:inherit;}
+/* 分组：标题 sticky 在**自己的分组 wrapper 内**（与 DSH 原生 MenuGroup 同构）——
+   这样上一组的标题会随分组滚走，不可能和下一组的标题叠在一起。
+   只有「卡住」时才铺不透明底色（原生也是这么做的），否则会让分组标题出现一条色带。 */
+[data-qbp-menu-group]{position:relative;}
+[data-qbp-menu-group] + [data-qbp-menu-group]{margin-top:3px;}
+[data-qbp-group-label]{position:sticky;top:0;z-index:1;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;
+  color:var(--dsw-alias-label-tertiary,#8b8f96);padding:4px 8px 2px;background:transparent;
+  border-radius:var(--dsw-radius-sm,6px);}
+[data-qbp-group-label][data-stuck]{background:var(--dsw-alias-menu-group-header-fill,rgba(248,249,250,.96));}
 [data-qbp-option]{display:flex;align-items:center;gap:8px;width:100%;min-height:34px;box-sizing:border-box;
   appearance:none;font:inherit;text-align:left;cursor:pointer;padding:5px 8px;border:none;border-radius:8px;
   background:transparent;color:inherit;}
@@ -304,10 +315,13 @@ window.__ModuleLoader__.load({
       const [active, setActive] = React.useState(0)
       const inputRef = React.useRef(null)
       const menuRef = React.useRef(null)
+      const bodyRef = React.useRef(null)
+      const optionRefs = React.useRef(new Map())
 
-      const options = React.useMemo(() => {
+      // 分组结构（不是平铺 + 同级 sticky）：每个 provider 一个 wrapper，标题 sticky 在组内。
+      const groupList = React.useMemo(() => {
         const q = query.trim().toLowerCase()
-        const list = []
+        const out = []
         for (const group of groups) {
           const groupName = String(group?.name ?? group?.id ?? '')
           const models = (group?.models ?? []).filter((model) => {
@@ -316,22 +330,33 @@ window.__ModuleLoader__.load({
             return text.includes(q)
           })
           if (!models.length) continue
-          list.push({ kind: 'group', id: String(group?.id ?? ''), name: groupName })
-          for (const model of models) {
-            list.push({
-              kind: 'model',
+          out.push({
+            id: String(group?.id ?? ''),
+            name: groupName,
+            models: models.map((model) => ({
               provider: String(group?.id ?? ''),
               providerName: groupName,
               model: String(model?.id ?? ''),
               modelName: String(model?.name ?? model?.id ?? ''),
               description: String(model?.description ?? ''),
-            })
-          }
+            })),
+          })
         }
-        return list
+        return out
       }, [catalog, query])
 
-      const selectable = React.useMemo(() => options.map((item, index) => ({ item, index })).filter((row) => row.item.kind === 'model'), [options])
+      // 键盘导航用的平铺索引（渲染时按分组顺序累加，和 flat 一一对应）。
+      const selectable = React.useMemo(() => {
+        const out = []
+        let index = 0
+        for (const group of groupList) {
+          for (const model of group.models) {
+            out.push({ index, item: model })
+            index += 1
+          }
+        }
+        return out
+      }, [groupList])
 
       React.useEffect(() => {
         if (inputRef.current) inputRef.current.focus()
@@ -339,6 +364,40 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         setActive(selectable.length ? selectable[0].index : 0)
       }, [query, catalog])
+
+      // 分组标题「卡住」才铺底色：与 DSH 原生 MenuGroup 的 data-stuck 行为一致。
+      // 每个标题 sticky 在自己的 group wrapper 里，因此上一组的标题会随分组一起滚走，
+      // 不会和下一组叠在一起（之前是同级 sticky + 透明背景，滚动时多个标题会互相透出）。
+      React.useEffect(() => {
+        const body = bodyRef.current
+        if (!body) return undefined
+        let raf = 0
+        const update = () => {
+          raf = 0
+          const bodyTop = body.getBoundingClientRect().top
+          for (const label of body.querySelectorAll('[data-qbp-group-label]')) {
+            const rect = label.getBoundingClientRect()
+            const stuck = rect.top <= bodyTop + 1 && rect.bottom > bodyTop + 1
+            if (stuck) label.setAttribute('data-stuck', '')
+            else label.removeAttribute('data-stuck')
+          }
+        }
+        const onScroll = () => {
+          if (!raf) raf = requestAnimationFrame(update)
+        }
+        body.addEventListener('scroll', onScroll, { passive: true })
+        update()
+        return () => {
+          body.removeEventListener('scroll', onScroll)
+          if (raf) cancelAnimationFrame(raf)
+        }
+      }, [groupList])
+
+      // 键盘上下移动时把当前项滚进视口（117 个模型时必须的，否则选中项跑出可视区）。
+      React.useEffect(() => {
+        const el = optionRefs.current.get(active)
+        if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' })
+      }, [active])
 
       React.useEffect(() => {
         const onDocDown = (event) => {
@@ -407,7 +466,7 @@ window.__ModuleLoader__.load({
         ),
         h(
           'div',
-          { 'data-qbp-menu-body': '', role: 'listbox' },
+          { 'data-qbp-menu-body': '', ref: bodyRef, role: 'listbox' },
           loading
             ? h('div', { 'data-qbp-menu-note': '' }, '正在读取 DSH 模型目录…')
             : null,
@@ -424,34 +483,47 @@ window.__ModuleLoader__.load({
           !loading && !catalog
             ? h('div', { 'data-qbp-menu-note': '' }, '没有可用的模型目录。')
             : null,
-          !loading && catalog && options.length === 0
+          !loading && catalog && groupList.length === 0
             ? h('div', { 'data-qbp-menu-note': '' }, query ? '没有匹配的模型。' : '模型目录为空：先在 DSH 里配置 Provider / API Key。')
             : null,
-          options.map((item, index) => {
-            if (item.kind === 'group') {
-              return h('div', { 'data-qbp-group-label': '', key: `g-${item.id}-${index}` }, item.name || item.id)
-            }
-            const selected = current.provider === item.provider && current.model === item.model
-            return h(
-              'button',
-              {
-                'data-qbp-option': '',
-                ...(selected ? { 'data-selected': '' } : {}),
-                ...(index === active ? { 'data-active': '' } : {}),
-                key: `m-${item.provider}-${item.model}`,
-                role: 'option',
-                'aria-selected': selected,
-                title: `${item.provider}/${item.model}`,
-                onMouseEnter: () => setActive(index),
-                onClick: () => onPick(item),
-              },
-              h('span', { 'data-qbp-option-copy': '' },
-                h('span', { 'data-qbp-option-name': '' }, item.modelName),
-                item.description ? h('span', { 'data-qbp-option-desc': '' }, item.description) : null,
+          (() => {
+            let index = -1
+            return groupList.map((group) =>
+              h(
+                'div',
+                { 'data-qbp-menu-group': '', key: `group-${group.id}` },
+                h('div', { 'data-qbp-group-label': '' }, group.name || group.id),
+                group.models.map((item) => {
+                  index += 1
+                  const itemIndex = index
+                  const selected = current.provider === item.provider && current.model === item.model
+                  return h(
+                    'button',
+                    {
+                      'data-qbp-option': '',
+                      ...(selected ? { 'data-selected': '' } : {}),
+                      ...(itemIndex === active ? { 'data-active': '' } : {}),
+                      key: `m-${item.provider}-${item.model}`,
+                      role: 'option',
+                      'aria-selected': selected,
+                      title: `${item.provider}/${item.model}`,
+                      ref: (el) => {
+                        if (el) optionRefs.current.set(itemIndex, el)
+                        else optionRefs.current.delete(itemIndex)
+                      },
+                      onMouseEnter: () => setActive(itemIndex),
+                      onClick: () => onPick(item),
+                    },
+                    h('span', { 'data-qbp-option-copy': '' },
+                      h('span', { 'data-qbp-option-name': '' }, item.modelName),
+                      item.description ? h('span', { 'data-qbp-option-desc': '' }, item.description) : null,
+                    ),
+                    selected ? h('span', { 'data-qbp-check': '' }, '✓') : null,
+                  )
+                }),
               ),
-              selected ? h('span', { 'data-qbp-check': '' }, '✓') : null,
             )
-          }),
+          })(),
         ),
         h(
           'div',
