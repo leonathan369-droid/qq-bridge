@@ -56,6 +56,9 @@ export function normalizeStickerEntry(raw) {
     id,
     resId: String(entry.resId || entry.emoji_id || id).trim(),
     url: String(entry.url || '').trim(),
+    // 本地表情：QQ 收藏夹接口不可用（或用户手动导入）时，图片落在桥接自己的目录里。
+    // 发送时优先读本地文件，不依赖任何远端 URL 是否还有效。
+    localFile: String(entry.localFile || '').trim(),
     md5: String(entry.md5 || '').trim().toUpperCase(),
     desc: sanitizeStickerText(entry.desc, 200),
     localNote: sanitizeStickerText(entry.localNote, 200),

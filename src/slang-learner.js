@@ -257,7 +257,10 @@ export function buildResearchPrompt(candidates) {
       return `${i + 1}. ${escapeLearnerText(String(e.content || '').slice(0, 50))}${evidence}`;
     })
     .join('\n');
-  return `你是群聊黑话研究员。请针对以下候选网络用语/黑话做**深度联网考究**：先结合给出的群友语境判断可能含义，再使用 web_search 搜索确认，并对最相关的 1~2 个结果用 web_fetch 抓取正文阅读（只读搜索/抓取，不要执行任何本地操作）。不要只依赖搜索摘要。
+  return `你是群聊黑话研究员。请针对以下候选网络用语/黑话做**深度联网考究**：先结合给出的群友语境判断可能含义，再使用 web_search 搜索确认，并挑最相关的 1~2 个结果用 web_fetch 抓取正文阅读（只读搜索/抓取，不要执行任何本地操作）。不要只依赖搜索摘要。
+
+【预算】每条候选最多 1 次 web_search；整批最多 2 次 web_fetch；搜索已明确给出含义时不要再抓网页。
+【必须输出全部候选】每一条候选都要出现在结果里，无论有没有研究出含义。
 
 候选：
 ${list}

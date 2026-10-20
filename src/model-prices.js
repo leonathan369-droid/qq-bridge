@@ -106,6 +106,19 @@ export const DEFAULT_PRICE_TABLE = {
       label: 'DeepSeek-V4.1-Flash（视觉实验名）',
       off: { cacheHit: 0.02, cacheMiss: 1, cacheWrite: 1, output: 4 }
     },
+    // AMD 路由用的模型 ID 是混合大小写，价格表按精确键查；补别名避免成本显示成 fallback 估算。
+    'DeepSeek-V4-Flash-Vision-Exp': {
+      label: 'DeepSeek-V4.1-Flash（AMD 视觉，混合大小写 ID）',
+      off: { cacheHit: 0.02, cacheMiss: 1, cacheWrite: 1, output: 4 }
+    },
+    'DeepSeek-V4-Flash': {
+      label: 'DeepSeek-V4.1-Flash（AMD，混合大小写 ID）',
+      off: { cacheHit: 0.02, cacheMiss: 1, cacheWrite: 1, output: 4 }
+    },
+    'DeepSeek-V4.1-Flash': {
+      label: 'DeepSeek-V4.1-Flash（AMD，混合大小写 ID）',
+      off: { cacheHit: 0.02, cacheMiss: 1, cacheWrite: 1, output: 4 }
+    },
     'deepseek-v4-pro': {
       label: 'DeepSeek-V4-Pro-0813',
       off: { cacheHit: 0.15, cacheMiss: 4.5, cacheWrite: 4.5, output: 13.5 }

@@ -63,6 +63,9 @@ const SLANG_FILE = path.join(STATE_DIR, 'slang.json');
 const SLANG_SESSION_FILE = path.join(STATE_DIR, 'slang-session.json');
 const SOCIAL_V2_FILE = path.join(STATE_DIR, 'social-v2.json');
 const STICKER_FILE = path.join(STATE_DIR, 'stickers.json');
+// 本地表情库目录：QQ 收藏夹接口不可用时（LLBot 的 fav-emoji 上传实测在 QQ 协议层
+// 稳定报 highway ECONNRESET），收藏的图片直接落在这里，发送时从磁盘读，不依赖远端 URL。
+const STICKER_DIR = path.join(STATE_DIR, 'stickers');
 const FEEDBACK_FILE = path.join(STATE_DIR, 'feedback.json');
 const TOOL_LOG_FILE = path.join(STATE_DIR, 'tool-calls.jsonl');
 const TOKEN_USAGE_FILE = path.join(STATE_DIR, 'token-usage.jsonl');
@@ -460,11 +463,41 @@ function isSilentMarker(text) {
   return /^\s*\[SILENT\]\s*$/i.test(String(text ?? '').trim());
 }
 
+// 静默旁白兜底：模型偶尔会把「我决定不接话」写成括号旁白（实测原样发到群里的是
+// 「（潜水，不是找我，不接话）」）。chat 模式会把正文原样转发，这类内部判断就漏出去了。
+// 判据刻意收窄：整条消息只有一个括号片段，且里面含明确的「不发言」意图词。
+// 只影响这种旁白，正常的「（笑）」「（笑死）」不会被误伤。
+const SILENT_NARRATION_RE = /^[（(][^）)]{0,60}[）)]$/;
+const SILENT_NARRATION_HINT = /潜水|不接话|不回复|不回应|不回|不插话|无视|与我无关|不是找我|静默|旁白|内心戏/;
+function isSilentNarration(text) {
+  const t = String(text ?? '').trim();
+  return SILENT_NARRATION_RE.test(t) && SILENT_NARRATION_HINT.test(t);
+}
+
 // DSH MCP 发送类工具：一旦 AI 在回合里调用过这些工具，说明消息已经由工具发出，
 // 桥接应跳过该回合的自动转发，避免“工具发一条 + 自动转发一条”的重复。
 const SEND_TOOL_RE = /^mcp__snowluma__qq_(send_group_message|send_private_message|reply|send_burst|send_message)$/;
 function isSendToolName(name) {
   return SEND_TOOL_RE.test(String(name ?? ''));
+}
+
+// 模型偶尔会把「打算调用的工具名」当成正文写出来（实测：`mcp__snowluma__qq_send_message`
+// 单独占一行，后面才是真正要说的话）。这类标识符发到 QQ 上毫无意义，而且 mdToPlain
+// 会把 `__x__` 当成粗体标记吃掉、变成 `mcpsnowlumaqq_send_message` 更难读。
+// 因此必须在**转纯文本之前**剥掉，否则连判定都做不了。
+// 判定刻意保守：只认 `mcp__` 命名空间与 `qq_` 前缀的动作名，不碰正常英文（ok / yes 等）。
+const TOOL_NAME_LINE_RE = /^\s*`?(?:mcp__[a-z0-9_]+|qq_[a-z0-9_]+)`?\s*$/i;
+const TOOL_NAME_INLINE_RE = /`?mcp__[a-z0-9_]+`?/gi;
+function stripToolNameLeak(text) {
+  const raw = String(text ?? '');
+  const lines = raw.split(/\r?\n/);
+  const kept = lines.filter((line) => !TOOL_NAME_LINE_RE.test(line));
+  if (kept.length === lines.length) {
+    // 没有整行命中：只清理内联出现，顺手压掉遗留的连续空格。
+    return raw.replace(TOOL_NAME_INLINE_RE, '').replace(/[ \t]{2,}/g, ' ').trim();
+  }
+  // 删行后可能留下连续空行，压成最多一个空行。
+  return kept.join('\n').replace(TOOL_NAME_INLINE_RE, '').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // 分句规则提示：真人聊天不会主动用空格，因此空格被桥接当作“分条信号”。
@@ -668,6 +701,15 @@ function loadConfig() {
       learnerPreset: 'qq-chat',
       workspaceTitle: 'QQ 黑话学习',
       autoResearch: true,
+      // 批量研究分批：AMD 大模型 + 联网搜索，单批越多回合越长，容易撞等待超时；
+      // 分批还能让每批结果立刻落盘，不会因为最后一批超时把前面成果一起丢掉。
+      researchBatchSize: 4,
+      // 单批研究等待上限（毫秒）。上游固定 120s 时实测一整个 15 词批量必然超时，
+      // 而 turn 往往在 150s 左右才正常结束 —— 结果被丢弃，控制台就一直显示「待研究」。
+      researchTimeoutMs: 300000,
+      // 黑话学习/研究会话的思考强度：与聊天会话的 dsh.reasoningEffort 分开配，
+      // 默认保持 high（提取/研究需要更细的判断），聊天那边可单独降到 low。
+      reasoningEffort: 'high',
       ...(file.slang ?? {})
     },
     social: {
@@ -798,7 +840,12 @@ function loadConfig() {
           enabled: true,           // AI 收藏他人表情总开关
           maxPerMinute: 2,         // 每分钟最多收藏次数
           maxPerHour: 10,          // 每小时最多收藏次数
-          maxRemarkChars: 20       // 收藏时备注最大长度
+          maxRemarkChars: 20,      // 收藏时备注最大长度
+          // 桥接侧自动偷图：群友发的表情包直接入本地库，不依赖模型主动调 qq_collect_sticker
+          //（模型一天只收藏 1 张，等它主动收等于不涨）。
+          auto: true,
+          autoMaxPerHour: 6,       // 自动收藏每小时上限
+          autoMaxLibrary: 80       // 表情库达到该条数后不再自动收，防止无限膨胀
         }
       },
       proactive: {
@@ -897,6 +944,9 @@ function loadConfig() {
       maxPerMinute: 2,
       maxPerHour: 10,
       maxRemarkChars: 20,
+      auto: true,
+      autoMaxPerHour: 6,
+      autoMaxLibrary: 80,
       ...((cfg.socialV2?.sticker?.collect) ?? {})
     },
     ...(cfg.socialV2?.sticker ?? {}),
@@ -905,6 +955,9 @@ function loadConfig() {
       maxPerMinute: 2,
       maxPerHour: 10,
       maxRemarkChars: 20,
+      auto: true,
+      autoMaxPerHour: 6,
+      autoMaxLibrary: 80,
       ...((cfg.socialV2?.sticker?.collect) ?? {})
     }
   };
@@ -926,8 +979,16 @@ function loadConfig() {
     cfg.dsh.reasoningEffort = REASONING_EFFORT_DEFAULT;
   }
 
+  // 黑话学习/研究会话的思考强度单独规范化（默认 high，见 slang 默认配置）。
+  try {
+    cfg.slang.reasoningEffort = normalizeReasoningEffort(cfg.slang?.reasoningEffort || 'high');
+  } catch (error) {
+    log(`⚠️ config.json 的 slang.reasoningEffort「${cfg.slang?.reasoningEffort}」非法，已回退 high（${error?.message ?? error}）`);
+    cfg.slang.reasoningEffort = 'high';
+  }
+
   // 人格卡注入上限（字符）。历史硬编码 6000，现在可配：每条约 4~6k token 的成本护栏。
-  cfg.role = { maxInjectChars: ROLE_INJECT_MAX_CHARS_DEFAULT, ...(file.role ?? {}) };
+  cfg.role = { maxInjectChars: ROLE_INJECT_MAX_CHARS_DEFAULT, injectPerMessage: true, ...(file.role ?? {}) };
   roleInjectMaxChars = applyRoleInjectLimit(cfg.role.maxInjectChars);
   if (roleInjectMaxChars !== cfg.role.maxInjectChars) {
     log(`人格注入上限已按范围校正为 ${roleInjectMaxChars} 字符（配置值 ${cfg.role.maxInjectChars}，允许 1000~20000）`);
@@ -1302,6 +1363,7 @@ async function main() {
   const learnerSessions = new Set();    // sessionId -> 学习会话（不映射 QQ，不发送）
   const learnerCollectors = new Map();  // sessionId -> turn collector
   const learnerWaiters = new Map();     // sessionId -> [{resolve,reject,timer}]
+  const learnerBusySessions = new Set(); // 学习会话是否有 turn 在跑（超时后仍能准确判断，供下一批等空闲）
   let slangLearnerSessionId = null;
   let slangTaskChain = Promise.resolve();
 
@@ -1329,7 +1391,127 @@ async function main() {
     try { saveStickerStore(STICKER_FILE, stickerEntries); } catch (error) { log('保存表情库失败:', error?.message ?? error); }
   }
 
-  // 从 SnowLuma OneBot 拉取 QQ 账号收藏表情（fetch_custom_face_detail），并合并进本地库。
+  // ── 收藏表情的「非 SnowLuma」兜底 ─────────────────────────────────────────
+  // SnowLuma 专有接口 fetch_custom_face_detail / add_custom_face / modify_custom_face
+  // 在 LLBot（LuckyLilliaBot）等实现上不存在（实测 404）。但 LLBot 自带 WebUI 暴露了
+  // 同等能力，内部走 ntMsgApi.getCustomFaceList / addCustomFace：
+  //   GET  /api/webqq/fav-emoji           → { retCode, errMsg, emojiInfoList:[{emojiId,url}] }
+  //   POST /api/webqq/fav-emoji/add       → { retCode, errMsg, emojiId }（body: { filePath }）
+  // 鉴权：X-Webui-Token = sha256(WebUI 密码)，密码直接配置或从文件读。
+  // 注意这是「同一台机器上的本地管理接口」，不引入新的远端信任面。
+  function llbotWebuiToken() {
+    const sl = cfg.snowluma ?? {};
+    let pw = String(sl.webuiPassword ?? '').trim();
+    if (!pw && sl.webuiPasswordFile) {
+      try { pw = fs.readFileSync(String(sl.webuiPasswordFile), 'utf8').trim(); } catch { pw = ''; }
+    }
+    if (!pw) return '';
+    return crypto.createHash('sha256').update(pw).digest('hex');
+  }
+
+  function llbotWebuiConfigured() {
+    return Boolean(String(cfg.snowluma?.webuiUrl ?? '').trim()) && Boolean(llbotWebuiToken());
+  }
+
+  async function llbotWebuiRequest(pathname, { method = 'GET', body } = {}) {
+    const base = String(cfg.snowluma?.webuiUrl ?? '').replace(/\/+$/, '');
+    if (!base) throw new Error('未配置 snowluma.webuiUrl');
+    const token = llbotWebuiToken();
+    if (!token) throw new Error('未配置 snowluma.webuiPassword / webuiPasswordFile');
+    const res = await fetch(`${base}${pathname}`, {
+      method,
+      headers: { 'x-webui-token': token, ...(body ? { 'content-type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(20000),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json.success === false) {
+      throw new Error(`LLBot WebUI ${pathname} 失败: ${json.message || json.error || res.status}`);
+    }
+    return json.data;
+  }
+
+  /** 由 URL 派生稳定的本地表情 id（OneBot fetch_custom_face 只给 URL 时用）。 */
+  function stickerIdFromUrl(url) {
+    const s = String(url || '').trim();
+    if (!s) return '';
+    return `url-${crypto.createHash('md5').update(s).digest('hex').slice(0, 16)}`;
+  }
+
+  /** 依图片魔数猜扩展名，供「写临时文件交给 LLBot 收藏」用。 */
+  function stickerFileExt(buffer) {
+    if (!buffer || buffer.length < 4) return 'png';
+    if (buffer[0] === 0x89 && buffer[1] === 0x50) return 'png';
+    if (buffer[0] === 0xff && buffer[1] === 0xd8) return 'jpg';
+    if (buffer.slice(0, 3).toString('ascii') === 'GIF') return 'gif';
+    if (buffer.slice(0, 4).toString('ascii') === 'RIFF' && buffer.slice(8, 12).toString('ascii') === 'WEBP') return 'webp';
+    return 'png';
+  }
+
+  async function llbotAddCustomFace(buffer) {
+    const dir = path.join(os.tmpdir(), 'qq-bridge-fav');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `fav-${crypto.randomUUID()}.${stickerFileExt(buffer)}`);
+    try {
+      fs.writeFileSync(file, buffer);
+      const data = await llbotWebuiRequest('/api/webqq/fav-emoji/add', { method: 'POST', body: { filePath: file } });
+      if (data && data.retCode !== undefined && data.retCode !== 0) {
+        throw new Error(data.errMsg || `retCode=${data.retCode}`);
+      }
+      return String(data?.emojiId ?? '');
+    } finally {
+      try { fs.rmSync(file, { force: true }); } catch {}
+    }
+  }
+
+  async function llbotListCustomFaces() {
+    const data = await llbotWebuiRequest('/api/webqq/fav-emoji', {});
+    if (data && data.retCode !== undefined && data.retCode !== 0) {
+      throw new Error(data.errMsg || `retCode=${data.retCode}`);
+    }
+    return (Array.isArray(data?.emojiInfoList) ? data.emojiInfoList : [])
+      .map((e) => ({ id: String(e?.emojiId ?? '').trim(), url: String(e?.url ?? '').trim() }))
+      .filter((e) => e.id || e.url);
+  }
+
+  /**
+   * 本地收藏兜底：QQ 侧收藏接口都不可用时，把图片直接存进桥接自己的表情库。
+   * 这样「AI 收藏一张表情，之后还能发出来」这件事在任何网关实现上都能成立，
+   * 代价只是它不在 QQ 客户端自带的收藏夹里。
+   */
+  function saveStickerLocally(buffer, { desc = '' } = {}) {
+    fs.mkdirSync(STICKER_DIR, { recursive: true });
+    const md5 = crypto.createHash('md5').update(buffer).digest('hex');
+    const id = `local-${md5.slice(0, 16)}`;
+    const rel = `${id}.${stickerFileExt(buffer)}`;
+    fs.writeFileSync(path.join(STICKER_DIR, rel), buffer);
+    const now = new Date().toISOString();
+    const existing = stickerEntries.find((e) => e && e.id === id);
+    const entry = {
+      ...(existing || {}),
+      id,
+      resId: id,
+      url: '',
+      localFile: rel,
+      md5: md5.toUpperCase(),
+      desc: desc || existing?.desc || '',
+      localNote: existing?.localNote || '',
+      tags: existing?.tags || [],
+      usage: existing?.usage || '',
+      source: existing?.source || 'ai',
+      useCount: existing?.useCount || 0,
+      lastUsedAt: existing?.lastUsedAt || 0,
+      lastContext: existing?.lastContext || '',
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+    if (existing) stickerEntries = stickerEntries.map((e) => (e && e.id === id ? entry : e));
+    else stickerEntries.push(entry);
+    saveStickerStoreSafe();
+    return { id, entry };
+  }
+
+  // 从 OneBot 拉取 QQ 账号收藏表情，并合并进本地库。
   // force=true 时忽略 TTL 强制刷新；失败时返回 null（调用方决定是否使用缓存）。
   async function syncStickerLibrary(force = false) {
     if (cfg.socialV2?.sticker?.enabled === false) return null;
@@ -1341,15 +1523,38 @@ async function main() {
     }
     try {
       const count = Math.min(500, Math.max(1, Number(cfg.socialV2?.sticker?.maxListCount) || 100));
-      const response = await bot.request('fetch_custom_face_detail', { count });
-      if (!response || response.status !== 'ok' || response.retcode !== 0) {
-        throw new Error(`fetch_custom_face_detail 失败: ${response?.wording || response?.retcode || 'unknown'}`);
+      // 三级回退，形状各不相同，统一归一成 [{id, url}]：
+      //   1) fetch_custom_face_detail —— SnowLuma，返回 {emoji_id,url,desc} 对象数组
+      //   2) LLBot WebUI /api/webqq/fav-emoji —— 返回 {emojiId,url}（最完整且稳定）
+      //   3) fetch_custom_face —— 通用实现，只返回 URL 字符串数组
+      // 只拿到 URL 也能工作：发送表情走的是 entry.url（桥接自己下载再发 image 段），
+      // 不依赖 emoji_id。
+      let fetched = null;
+      const detail = await bot.request('fetch_custom_face_detail', { count }).catch(() => null);
+      if (detail && detail.status === 'ok' && detail.retcode === 0 && Array.isArray(detail.data)) {
+        fetched = detail.data;
       }
-      // 只有拿到合法数组才允许合并；data 缺失/异常时不能拿空数组清空本地 QQ 表情库。
-      if (!Array.isArray(response.data)) {
-        throw new Error('fetch_custom_face_detail 返回 data 不是数组，已放弃同步');
+      if (!fetched && llbotWebuiConfigured()) {
+        try {
+          fetched = await llbotListCustomFaces();
+          log(`[sticker] 已用 LLBot WebUI 读取收藏表情 ${fetched.length} 个`);
+        } catch (error) {
+          log(`[sticker] LLBot WebUI 读取收藏表情失败（将回退 OneBot 接口）: ${error?.message ?? error}`);
+          fetched = null;
+        }
       }
-      const fetched = response.data;
+      if (!fetched) {
+        const urls = await bot.request('fetch_custom_face', { count }).catch(() => null);
+        if (urls && urls.status === 'ok' && urls.retcode === 0 && Array.isArray(urls.data)) {
+          fetched = urls.data
+            .map((u) => (typeof u === 'string' ? { id: stickerIdFromUrl(u), url: u } : u))
+            .filter((e) => e && (e.id || e.url));
+        }
+      }
+      // 只有拿到合法数组才允许合并；拿不到时不能拿空数组清空本地 QQ 表情库。
+      if (!Array.isArray(fetched)) {
+        throw new Error('三种收藏表情接口都不可用（fetch_custom_face_detail / WebUI fav-emoji / fetch_custom_face）');
+      }
       stickerEntries = mergeStickerLibrary(stickerEntries, fetched, { complete: fetched.length < count });
       stickerSyncedAt = Date.now();
       saveStickerStoreSafe();
@@ -1358,6 +1563,84 @@ async function main() {
     } catch (error) {
       log(`[sticker] 同步收藏表情失败: ${error?.message ?? error}`);
       return null;
+    }
+  }
+
+  // ── 自动偷图收藏（不依赖模型主动调用） ───────────────────────────────────
+  // 为什么要有这条路径：实测换 AMD 后模型一整天只调了 1 次 qq_collect_sticker，
+  // 库里永远是那 4 张，群里 100 条消息里几十张图也进不来。
+  //
+  // 边界与取舍：
+  // - 只处理**群聊**（私聊多是截图/工作图，收进来是噪声）；
+  // - 只做本地入库，不写 QQ 收藏夹：LLBot WebUI 的 fav-emoji 写入实测 30s 超时不可用，
+  //   而本地库对 AI 完全等价（qq_list_stickers / qq_send_sticker 都走同一份数据）；
+  // - 尺寸特征过滤：GIF 一律收；静态图要求「接近正方 + 边长 ≤480 + ≤700KB」，
+  //   避免把照片/长截图当表情收进库；按 media.file/url 去重，同一张只下一次。
+  const stickerAutoCollectTimes = [];      // 全局自动收藏时间戳（限频用）
+  const stickerAutoCollectSeen = new Set(); // 已处理过的 media 指纹，避免重复下载
+  let stickerAutoCollectInFlight = 0;
+
+  async function autoCollectStickerFromMessage(key, msg) {
+    try {
+      const stickerCfg = cfg.socialV2?.sticker ?? {};
+      const collectCfg = stickerCfg.collect ?? {};
+      if (stickerCfg.enabled === false) return;
+      if (collectCfg.enabled === false || collectCfg.auto === false) return;
+      if (!/^group:/.test(String(key))) return;
+      if (msg?.isOwner) return;
+      const media = (Array.isArray(msg?.media) ? msg.media : []).find((m) => m && m.kind === 'image');
+      if (!media) return;
+      const fingerprint = String(media.file || media.url || '').trim();
+      if (!fingerprint || stickerAutoCollectSeen.has(fingerprint)) return;
+      const maxLibrary = Math.max(0, Number(collectCfg.autoMaxLibrary) || 0);
+      if (maxLibrary > 0 && stickerEntries.length >= maxLibrary) return;
+      const maxPerHour = Math.max(0, Number(collectCfg.autoMaxPerHour) || 0);
+      const now = Date.now();
+      while (stickerAutoCollectTimes.length && now - stickerAutoCollectTimes[0] > 3600000) stickerAutoCollectTimes.shift();
+      if (maxPerHour > 0 && stickerAutoCollectTimes.length >= maxPerHour) return;
+      if (stickerAutoCollectInFlight >= 2) return;
+      stickerAutoCollectSeen.add(fingerprint);
+      if (stickerAutoCollectSeen.size > 2000) {
+        const iter = stickerAutoCollectSeen.values();
+        for (let i = 0; i < 500; i += 1) {
+          const v = iter.next().value;
+          if (v === undefined) break;
+          stickerAutoCollectSeen.delete(v);
+        }
+      }
+      stickerAutoCollectInFlight += 1;
+      try {
+        const img = await Promise.race([
+          fetchOneBotImage(media),
+          new Promise((_resolve, reject) => setTimeout(() => reject(new Error('自动收藏下载超时')), 15000))
+        ]);
+        const buffer = img?.buffer;
+        if (!buffer || !looksLikeImageBuffer(buffer)) return;
+        if (buffer.length > 700 * 1024) return;
+        const dims = getImageDimensions(buffer);
+        const mime = String(mimeFromBuffer(buffer) || '');
+        const isGif = /gif/i.test(mime);
+        const square = !!(dims && dims.width > 0 && dims.height > 0
+          && Math.min(dims.width, dims.height) / Math.max(dims.width, dims.height) >= 0.75);
+        // 像素上限放到 800：群里常见的表情是 600x600 级别的 PNG（24~60KB，画面简单、压缩后很小），
+        // 卡 480 会把它们全漏掉；真正的照片同尺寸通常 >300KB，用文件大小兜底区分。
+        const smallEnough = !!(dims && Math.max(dims.width, dims.height) <= 800 && buffer.length <= 300 * 1024);
+        if (!isGif && !(square && smallEnough)) {
+          log(`[sticker] 自动收藏跳过 ${key}：不像表情（${dims ? dims.width + 'x' + dims.height : '未知尺寸'}，${Math.round(buffer.length / 1024)}KB）`);
+          return;
+        }
+        const before = stickerEntries.length;
+        const saved = saveStickerLocally(buffer, { desc: '' });
+        // 同 md5 已存在时 saveStickerLocally 只更新不新增：不算一次收藏，也不占限频额度。
+        if (!saved?.id || stickerEntries.length === before) return;
+        stickerAutoCollectTimes.push(Date.now());
+        const sizeText = dims ? `${dims.width}x${dims.height}` : '未知尺寸';
+        log(`[sticker] 自动收藏群友表情 ${key}: ${saved.id}（${sizeText}，${Math.round(buffer.length / 1024)}KB，库 ${stickerEntries.length} 条）`);
+      } finally {
+        stickerAutoCollectInFlight -= 1;
+      }
+    } catch (error) {
+      log(`[sticker] 自动收藏失败 ${key}: ${error?.message ?? error}`);
     }
   }
 
@@ -1774,7 +2057,10 @@ async function main() {
     const entry = findSticker(synced?.entries ?? stickerEntries, stickerRef);
     if (!entry) throw new Error(`找不到表情 ${stickerRef}，请先用 qq_list_stickers 获取有效 id`);
     const url = entry.url;
-    if (!url) throw new Error(`表情 ${entry.id} 没有可发送的图片地址`);
+    // 本地表情优先：localFile 是相对 STICKER_DIR 的路径。QQ 收藏夹接口不可用时，
+    // 收藏动作会把图片存成本地文件，这里直接读盘，避免依赖可能已失效的远端 URL。
+    const localPath = entry.localFile ? path.resolve(STICKER_DIR, entry.localFile) : '';
+    if (!url && !localPath) throw new Error(`表情 ${entry.id} 既没有图片地址也没有本地文件，无法发送`);
     const [kind, id] = key.split(':');
     const segments = [];
     const replyToMessageId = options.replyToMessageId;
@@ -1792,13 +2078,23 @@ async function main() {
       segments.push({ type: 'at', data: { qq: at } });
     }
     // 在桥接内完成带 DNS 固定、逐跳校验和大小限制的下载；不能把 URL 交给网关重新抓取。
+    // 有本地文件时直接读盘：既省一次下载，也不受图片 URL 过期影响。
     let image;
     try {
-      image = await safeFetchBuffer(url);
+      if (localPath) {
+        if (!fs.existsSync(localPath)) throw new Error(`本地表情文件不存在: ${entry.localFile}`);
+        image = { buffer: fs.readFileSync(localPath) };
+      } else {
+        image = await safeFetchBuffer(url);
+      }
     } catch (error) {
       throw new Error(`表情 ${entry.id} 的图片地址不合法，已拒绝发送：${error?.message ?? error}`);
     }
-    segments.push({ type: 'image', data: { file: 'base64://' + image.buffer.toString('base64') } });
+    // subType: 1 = QQ 的「表情图片」，客户端会按表情尺寸渲染（小而居中）；
+    // 不带它则是普通图片，大图会铺满聊天页，看起来完全不像表情包。
+    // 依据：群里收到的表情包消息段本身就是 { type:'image', data:{ subType:1 } }，
+    // LLBot 的 OB11 发送端把它映射到 picSubType，SnowLuma 同样接受该字段。
+    segments.push({ type: 'image', data: { file: 'base64://' + image.buffer.toString('base64'), subType: 1 } });
     const action = kind === 'private' ? 'send_private_msg' : 'send_group_msg';
     const params = kind === 'private' ? { user_id: Number(id), message: segments } : { group_id: Number(id), message: segments };
     const httpUrl = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
@@ -1885,40 +2181,69 @@ async function main() {
     const mediaList = Array.isArray(found.media) ? found.media : [];
     if (!mediaList.length) throw new Error('这条消息没有可收藏的图片/表情');
     const media = mediaList[0];
-    let file = '';
+    let buffer = null;
     if (media?.kind === 'image') {
-      // 优先取图片字节转 base64，避免 SnowLuma 直接下载聊天图片 URL 失败（带签名/防盗链）。
+      // 优先取图片字节转 base64，避免网关直接下载聊天图片 URL 失败（带签名/防盗链）。
       // 严禁把消息里的原始 media.url / media.file 直接交给 OneBot 去下载：那会绕过 SSRF/本地文件防护。
       const img = await fetchOneBotImage(media);
-      if (img?.buffer) {
-        file = 'base64://' + img.buffer.toString('base64');
-      } else {
-        throw new Error('无法安全获取该图片字节，已拒绝收藏');
-      }
+      if (img?.buffer) buffer = img.buffer;
+      else throw new Error('无法安全获取该图片字节，已拒绝收藏');
     } else if (media?.kind === 'face') {
       const face = await fetchFaceMedia(media);
-      if (face?.buffer) file = 'base64://' + face.buffer.toString('base64');
+      if (face?.buffer) buffer = face.buffer;
     }
-    if (!file) throw new Error('无法获取该表情的图片源');
+    if (!buffer) throw new Error('无法获取该表情的图片源');
     assertSendAllowed();
-    const addRes = await bot.request('add_custom_face', { file });
-    if (!addRes || addRes.status !== 'ok' || addRes.retcode !== 0) {
-      throw new Error(`add_custom_face 失败: ${addRes?.wording || addRes?.retcode || 'unknown'}`);
+    // 收藏（写入 QQ 收藏夹）两条路：
+    //   1) SnowLuma：OneBot add_custom_face（base64）
+    //   2) LLBot：没有该 OneBot action，改用自带 WebUI /api/webqq/fav-emoji/add（本地文件路径）
+    let emojiId = '';
+    let usedGateway = false;
+    const addRes = await bot.request('add_custom_face', { file: 'base64://' + buffer.toString('base64') }).catch(() => null);
+    if (addRes && addRes.status === 'ok' && addRes.retcode === 0) {
+      emojiId = String(addRes.data?.emoji_id || '');
+      usedGateway = true;
     }
-    const emojiId = String(addRes.data?.emoji_id || '');
-    if (!emojiId) throw new Error('add_custom_face 未返回 emoji_id');
+    if (!emojiId && llbotWebuiConfigured()) {
+      try {
+        emojiId = await llbotAddCustomFace(buffer);
+        log(`[sticker] add_custom_face 不可用（${addRes?.wording || addRes?.retcode || 'no response'}），已改用 LLBot WebUI 收藏 ${key}`);
+      } catch (error) {
+        log(`[sticker] LLBot WebUI 收藏失败，改为本地收藏 ${key}: ${error?.message ?? error}`);
+      }
+    }
     const maxRemarkChars = Math.max(1, Number(cfg.socialV2?.sticker?.collect?.maxRemarkChars) || 20);
     const cleanRemark = String(remark ?? '').trim().slice(0, maxRemarkChars);
+    // 两条 QQ 侧写入都不可用 ⇒ 落本地库。AI 视角完全一致：收藏完就能在 qq_list_stickers 看到并发送。
+    if (!emojiId) {
+      const saved = saveStickerLocally(buffer, { desc: cleanRemark });
+      log(`[sticker] 已本地收藏表情 ${saved.id}（QQ 收藏夹写入不可用，仅存本机）`);
+      return { emojiId: saved.id, entry: saved.entry, remark: cleanRemark, local: true };
+    }
     if (cleanRemark) {
       assertSendAllowed();
-      const modRes = await bot.request('modify_custom_face', { emoji_id: emojiId, desc: cleanRemark });
-      if (!modRes || modRes.status !== 'ok' || modRes.retcode !== 0) {
-        log(`[sticker] 收藏成功但备注失败 ${emojiId}: ${modRes?.wording || modRes?.retcode || 'unknown'}`);
+      // modify_custom_face 同样是 SnowLuma 专有；LLBot WebUI 没有改备注的接口，
+      // 这种时候只记一条日志，不把「收藏成功」整体判失败。
+      if (usedGateway) {
+        const modRes = await bot.request('modify_custom_face', { emoji_id: emojiId, desc: cleanRemark });
+        if (!modRes || modRes.status !== 'ok' || modRes.retcode !== 0) {
+          log(`[sticker] 收藏成功但备注失败 ${emojiId}: ${modRes?.wording || modRes?.retcode || 'unknown'}`);
+        }
+      } else {
+        log(`[sticker] 当前网关没有 modify_custom_face，备注仅保存在本地库（${emojiId}）`);
       }
     }
     // 强制刷新本地库，让刚收藏的表情立即可用。
     const synced = await syncStickerLibrary(true);
     const entry = findSticker(synced?.entries ?? stickerEntries, emojiId);
+    // LLBot 的 WebUI 返回 emojiId，但本地库可能按 URL 派生 id；这里把备注落到实际命中条目上，
+    // 否则 AI 刚起的备注名在下一次列表情时就消失了。
+    if (entry && cleanRemark) {
+      try {
+        stickerEntries = applyStickerNote(stickerEntries, entry.id, { localNote: cleanRemark });
+        saveStickerStoreSafe();
+      } catch (error) { log(`[sticker] 写入本地备注失败: ${error?.message ?? error}`); }
+    }
     return { emojiId, entry: entry || null, remark: cleanRemark };
   }
 
@@ -1956,7 +2281,7 @@ async function main() {
       slangLearnerSessionId = String(saved.sessionId);
       learnerSessions.add(slangLearnerSessionId);
       api.events.follow(slangLearnerSessionId);
-      await ensureChatModel(slangLearnerSessionId);
+      await ensureChatModel(slangLearnerSessionId, cfg.slang?.reasoningEffort || 'high');
       return slangLearnerSessionId;
     }
     const dir = path.join(STATE_DIR, 'slang-agent');
@@ -1972,7 +2297,7 @@ async function main() {
     slangLearnerSessionId = value.sessionId;
     learnerSessions.add(slangLearnerSessionId);
     api.events.follow(slangLearnerSessionId);
-    await ensureChatModel(slangLearnerSessionId);
+    await ensureChatModel(slangLearnerSessionId, cfg.slang?.reasoningEffort || 'high');
     fs.mkdirSync(STATE_DIR, { recursive: true });
     atomicWriteJson(SLANG_SESSION_FILE, { sessionId: slangLearnerSessionId, preset });
     log(`黑话学习会话已创建：${slangLearnerSessionId}`);
@@ -1984,6 +2309,7 @@ async function main() {
     // 没有等待/收集中的旧会话才从集合移除。
     const oldId = slangLearnerSessionId;
     slangLearnerSessionId = null;
+    if (oldId) learnerBusySessions.delete(oldId);
     if (oldId && !learnerWaiters.has(oldId) && !learnerCollectors.has(oldId)) {
       learnerSessions.delete(oldId);
     }
@@ -2006,6 +2332,29 @@ async function main() {
     });
   }
 
+  // 等学习会话真正空闲。
+  // 为什么需要：waitLearnerTurn 超时只是放弃等待，DSH 那边的 turn 还在跑；
+  // 此时直接排下一批 prompt，旧 turn 结束的事件会把**新** waiter 提前唤醒，
+  // 于是新一批拿到的是上一批的输出（错位）。分批研究必须先把在跑的 turn 排空。
+  async function waitLearnerIdle(sessionId, timeoutMs = 300000) {
+    const startedAt = Date.now();
+    while (learnerBusySessions.has(sessionId)) {
+      if (Date.now() - startedAt > timeoutMs) return false;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    return true;
+  }
+
+  // 学习会话是否真的失效（需要重建）。
+  // 注意「等待学习会话 turn 超时」的文案里含「会话」二字：旧实现用 /会话|session/ 直接匹配，
+  // 于是一次慢 turn 超时就被判定为会话失效 —— 删会话记录、下次重建，历史上下文全丢。
+  // 超时/网络抖动一律不算失效，只有真正的「找不到会话」才重建。
+  function isLearnerSessionDeadError(error) {
+    const msg = String(error?.message ?? error);
+    if (/超时|timeout/i.test(msg)) return false;
+    return /会话|session|not found|404/i.test(msg);
+  }
+
   async function runSlangExtraction(key) {
     if (cfg.slang?.enabled === false) return;
     if (!dshReady) return;
@@ -2023,11 +2372,16 @@ async function main() {
 
     const promptText = buildExtractionPrompt(messages);
     try {
+      if (!(await waitLearnerIdle(sessionId))) {
+        log(`黑话提取放弃 (${key}): 学习会话一直不空闲`);
+        return;
+      }
       const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: promptText }] });
       if (!accepted.result.ok) {
         log(`黑话提取被拒 (${key}): ${accepted.result.error.code}: ${accepted.result.error.message}`);
         return;
       }
+      learnerBusySessions.add(sessionId);
       const output = await waitLearnerTurn(sessionId);
       const items = parseExtractionJson(output);
       if (!items.length) {
@@ -2061,7 +2415,7 @@ async function main() {
         queueSlangTask(() => runSlangResearch(researchCandidates));
       }
     } catch (error) {
-      if (/会话|session|not found|404/i.test(String(error?.message ?? error))) {
+      if (isLearnerSessionDeadError(error)) {
         invalidateSlangLearnerSession();
       }
       log(`黑话提取失败 (${key}):`, error?.message ?? error);
@@ -2084,39 +2438,60 @@ async function main() {
       log('黑话研究会话创建失败:', error?.message ?? error);
       return;
     }
-    const promptText = buildResearchPrompt(targets);
+    const batchSize = Math.max(1, Math.min(12, Number(cfg.slang?.researchBatchSize) || 4));
+    const timeoutMs = Math.max(60000, Number(cfg.slang?.researchTimeoutMs) || 300000);
     try {
-      const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: promptText }] });
-      if (!accepted.result.ok) {
-        log(`黑话研究被拒: ${accepted.result.error.code}: ${accepted.result.error.message}`);
-        return;
-      }
-      const output = await waitLearnerTurn(sessionId);
-      const results = parseResearchJson(output);
-      for (const r of results) {
-        const entry = slangEntries.find((e) => e.content === r.content);
-        if (!entry) continue;
-        // 只有明确确认（confirmed: true）的结果才写入解释字段；
-        // 不确定/未确认的结果保留原状，允许后续再次研究。
-        if (r.confirmed !== true) {
-          log(`黑话研究：${r.content} 未确认，保留候选待后续研究`);
+      let batchNo = 0;
+      const batchTotal = Math.ceil(targets.length / batchSize);
+      for (let offset = 0; offset < targets.length; offset += batchSize) {
+        const batch = targets.slice(offset, offset + batchSize);
+        batchNo += 1;
+        // 上一批即使等待超时，turn 也可能还在跑；先排空，避免输出错位到这一批。
+        if (!(await waitLearnerIdle(sessionId, timeoutMs))) {
+          log(`黑话研究：第 ${batchNo}/${batchTotal} 批放弃，学习会话一直不空闲`);
           continue;
         }
-        if (r.meaning) entry.meaning = r.meaning;
-        if (r.usage) entry.usage = r.usage;
-        if (r.example) entry.example = r.example;
-        if (r.risk) entry.risk = r.risk;
-        if (Array.isArray(r.sources) && r.sources.length) entry.sources = r.sources.map((s) => String(s ?? '').trim()).filter(Boolean).slice(0, 10);
-        entry.lastInferenceCount = entry.count;
-        entry.updatedAt = new Date().toISOString();
+        const promptText = buildResearchPrompt(batch);
+        try {
+          const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: promptText }] });
+          if (!accepted.result.ok) {
+            log(`黑话研究被拒 (第 ${batchNo} 批): ${accepted.result.error.code}: ${accepted.result.error.message}`);
+            continue;
+          }
+          learnerBusySessions.add(sessionId);
+          const output = await waitLearnerTurn(sessionId, timeoutMs);
+          const results = parseResearchJson(output);
+          let updated = 0;
+          for (const r of results) {
+            const entry = slangEntries.find((e) => e.content === r.content);
+            if (!entry) continue;
+            // 只有明确确认（confirmed: true）的结果才写入解释字段；
+            // 不确定/未确认的结果保留原状，允许后续再次研究。
+            if (r.confirmed !== true) {
+              log(`黑话研究：${r.content} 未确认，保留候选待后续研究`);
+              continue;
+            }
+            if (r.meaning) entry.meaning = r.meaning;
+            if (r.usage) entry.usage = r.usage;
+            if (r.example) entry.example = r.example;
+            if (r.risk) entry.risk = r.risk;
+            if (Array.isArray(r.sources) && r.sources.length) entry.sources = r.sources.map((s) => String(s ?? '').trim()).filter(Boolean).slice(0, 10);
+            entry.lastInferenceCount = entry.count;
+            entry.updatedAt = new Date().toISOString();
+            updated += 1;
+          }
+          // 每批立刻落盘：后面批次失败/超时也不影响已经研究出来的结果。
+          saveSlangStore();
+          log(`黑话研究：第 ${batchNo}/${batchTotal} 批（${batch.map((e) => e.content).join('、')}）解析 ${results.length} 条，写入 ${updated} 条`);
+        } catch (error) {
+          if (isLearnerSessionDeadError(error)) {
+            invalidateSlangLearnerSession();
+            log('黑话研究停止：学习会话已失效', error?.message ?? error);
+            break;
+          }
+          log(`黑话研究第 ${batchNo}/${batchTotal} 批失败:`, error?.message ?? error);
+        }
       }
-      saveSlangStore();
-      log(`黑话研究：已更新 ${results.length} 条候选解释`);
-    } catch (error) {
-      if (/会话|session|not found|404/i.test(String(error?.message ?? error))) {
-        invalidateSlangLearnerSession();
-      }
-      log('黑话研究失败:', error?.message ?? error);
     } finally {
       for (const e of targets) slangResearchingIds.delete(e.id);
     }
@@ -2770,6 +3145,9 @@ async function main() {
       }
     } else if (dshReady) {
       dshReady = false;
+      // DSH 重启会把在跑的 turn 直接打掉，不会再有 turn/end 事件；
+      // 不清掉「忙」标记，下一次黑话研究会在等待空闲上白等满一轮超时。
+      learnerBusySessions.clear();
       log('⚠️ DSH 不可用（重启中？），QQ 消息将入队等待');
     }
   };
@@ -5164,13 +5542,31 @@ async function main() {
           if (req.headers['x-agent-token'] && !v2ToolEnabled('getStickerImage')) { sendJson({ ok: false, error: '工具未启用：qq_get_sticker_image' }, 403); return; }
           try {
             const entry = await getStickerImageData(stickerId);
-            const fetched = await safeFetchBuffer(entry.url, MAX_MEDIA_BYTES);
-            const dims = getImageDimensions(fetched.buffer);
+            // 本地收藏的表情（saveStickerLocally 落盘的那种）url 是空串：旧实现只走
+            // safeFetchBuffer(entry.url) ⇒ 一律「URL 无效」，于是 AI 永远看不到自己收的图，
+            // 也就没法「先看图再 qq_sticker_note 写备注」。这里优先读本地文件。
+            let buffer = null;
+            let mimeType = '';
+            const localFile = String(entry.localFile || '').trim();
+            if (localFile) {
+              const filePath = path.join(STICKER_DIR, path.basename(localFile));
+              const stat = fs.existsSync(filePath) ? fs.statSync(filePath) : null;
+              if (!stat) throw new Error(`本地表情文件不存在：${path.basename(localFile)}`);
+              if (stat.size > MAX_MEDIA_BYTES) throw new Error(`本地表情文件超限（${Math.round(stat.size / 1024)}KB）`);
+              buffer = fs.readFileSync(filePath);
+              mimeType = mimeFromBuffer(buffer) || mimeFromUrl(localFile) || 'image/png';
+            } else if (entry.url) {
+              const fetched = await safeFetchBuffer(entry.url, MAX_MEDIA_BYTES);
+              buffer = fetched.buffer;
+              mimeType = mimeFromBuffer(buffer) || mimeFromUrl(entry.url);
+            } else {
+              throw new Error('该表情既没有本地文件也没有图片 URL');
+            }
+            const dims = getImageDimensions(buffer);
             if (dims && dims.width * dims.height > MAX_MEDIA_PIXELS) {
               sendJson({ ok: false, error: `表情图片像素超限（${dims.width}x${dims.height}），已拒绝` }, 400);
               return;
             }
-            const mimeType = mimeFromBuffer(fetched.buffer) || mimeFromUrl(entry.url);
             sendJson({
               ok: true,
               key,
@@ -5182,7 +5578,7 @@ async function main() {
                 url: entry.url,
                 md5: entry.md5
               },
-              image: { mimeType, data: fetched.buffer.toString('base64') }
+              image: { mimeType, data: buffer.toString('base64') }
             });
           } catch (error) {
             sendJson({ ok: false, error: `获取表情图片失败：${error?.message ?? error}` }, 500);
@@ -5767,6 +6163,52 @@ async function main() {
             st.pendingWakeTimer = null;
           }
           cancelReplyCheckV2(key); // AI 正在主动等待，取消回复检查定时器避免重复唤醒
+          // 已经存在「模型没看过的未读」时立刻返回，绝不空等 timeout。
+          //
+          // 为什么：下面的等待循环只把「本请求期间新到的消息」（lastUnreadSeq > baseline）算作到达，
+          // 于是「发完一条 → 紧接着调等待」这几秒里对方到达的消息不算到达，等待会白睡满
+          // timeout（实测私聊空转 60/60/120 秒，回复从 ~15 秒拖到 87~110 秒）。
+          // 未读缓冲里本来就有待处理消息时，正确的语义是「现在就有事可做」，直接交回消息。
+          const preSleepGateMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
+          if (!replyWait && timeoutMs < preSleepGateMs && v2ToolEnabled('getUnread')) {
+            const seenThrough = readThroughSeqV2(st);
+            const unseenNow = st.unread
+              .filter((m) => m && !m.isSelf && Number.isSafeInteger(m.seq) && m.seq > seenThrough)
+              .slice(-30);
+            if (unseenNow.length) {
+              const preSleepMsNow = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
+              const preSleepRemainingNow = preSleepWaitBlockedV2(st)
+                ? Math.max(0, preSleepMsNow - ((st.lastIncomingAt || 0) ? Date.now() - st.lastIncomingAt : 0))
+                : 0;
+              const lastUnseen = unseenNow[unseenNow.length - 1];
+              const throughNow = noteModelMessagesV2(st, unseenNow);
+              saveSocialV2State();
+              log(`[reserved2] wait 立即返回 ${key}：已有 ${unseenNow.length} 条模型未读，不等 timeout`);
+              finishWait();
+              sendJson({
+                ok: true,
+                key,
+                purpose: 'messages',
+                arrived: true,
+                quiet: false,
+                quietMs,
+                suggestedQuietMs,
+                speakerLikelyDone: false,
+                lastMessageUnfinished: looksLikeUnfinished(String(lastUnseen.tail || lastUnseen.plain || lastUnseen.text || '')),
+                timeout: false,
+                waitedMs: 0,
+                alreadyPending: true,
+                preSleepWaitSatisfied: false,
+                preSleepWaitObserved: !!st.preSleepWaitObservedAt,
+                preSleepWaitMs: preSleepMsNow,
+                preSleepWaitRemainingMs: preSleepRemainingNow,
+                newMessages: unseenNow,
+                readThroughSeq: throughNow,
+                unreadCount: st.unread.length
+              });
+              return;
+            }
+          }
           // A reply wait must also include messages received while the model
           // was reading/thinking after its snapshot, before this HTTP request.
           const requestSeq = st.lastUnreadSeq || 0;
@@ -7523,20 +7965,23 @@ async function main() {
   // 控制台热切换思考强度时递增 modelSelectionEpoch，使旧记录失效并在下一条消息重新应用。
   // 四种 QQ 模式共用 DSH 会话，统一强制使用多模态模型 DeepSeek-V41-Flash（id: deepseek-flash）；
   // 它同时支持 text/image 输入，取代已下线的 deepseek-v4-flash-vision-exp。
-  const modelAppliedSessions = new Map(); // sessionId -> 已应用的 modelSelectionEpoch
+  const modelAppliedSessions = new Map(); // sessionId -> 已应用的 `${modelSelectionEpoch}:${effort}`
   // 返回 'applied' | 'not-found' | 'failed'。
   // 'not-found' 表示 DSH 侧会话已经不存在（DSH 重启、异常退出、归档竞态），
   // 本地映射已失效，调用方必须退役重建，否则每条消息都会对着一个不存在的会话重试。
-  async function ensureChatModel(sessionId) {
-    if (modelAppliedSessions.get(sessionId) === modelSelectionEpoch) return 'applied';
+  async function ensureChatModel(sessionId, effortOverride = '') {
+    const effort = String(effortOverride || cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT);
+    // 去重键带上 effort：黑话学习/研究会话用 cfg.slang.reasoningEffort(high)，聊天会话用
+    // dsh.reasoningEffort(low)，同一进程内两种强度必须分开记，否则会互相覆盖。
+    const appliedKey = `${modelSelectionEpoch}:${effort}`;
+    if (modelAppliedSessions.get(sessionId) === appliedKey) return 'applied';
     const provider = String(cfg.dsh?.provider || 'deepseek-official');
     const model = String(cfg.dsh?.model || 'deepseek-flash');
-    const effort = String(cfg.dsh?.reasoningEffort || REASONING_EFFORT_DEFAULT);
     let lastError = null;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
         const result = unwrap(await api.sessions.selectModel({ sessionId, provider, model, reasoningEffort: effort }), 'session.selectModel');
-        modelAppliedSessions.set(sessionId, modelSelectionEpoch);
+        modelAppliedSessions.set(sessionId, appliedKey);
         log(`已设置会话模型 ${sessionId} -> ${result.selected.provider}/${result.selected.model} (${result.selected.reasoningEffort ?? '默认'})`);
         return 'applied';
       } catch (error) {
@@ -7548,7 +7993,7 @@ async function main() {
     const message = String(lastError?.message ?? lastError ?? '');
     if (/not[- ]?found/i.test(message)) {
       // 终态失败：记下 epoch，避免退役前（或退役失败时）被反复重试刷屏。
-      modelAppliedSessions.set(sessionId, modelSelectionEpoch);
+      modelAppliedSessions.set(sessionId, appliedKey);
       return 'not-found';
     }
     return 'failed';
@@ -8749,6 +9194,11 @@ async function main() {
     return selected.length > roleInjectMaxChars ? truncateText(selected, roleInjectMaxChars) : selected;
   }
   function currentRoleHint() {
+    // 逐条注入开关（config.role.injectPerMessage，默认 true 保持上游行为）。
+    // 上游选择每条消息都附角色卡，是为了对抗 DSH 上下文压缩导致的人格丢失；
+    // 代价是整张卡会随每条 user message 进入会话历史，token 线性膨胀。
+    // 设为 false 后角色卡不再进历史，人格应改由预设的 system prompt 承载。
+    if (cfg.role?.injectPerMessage === false) return '';
     return roleHintForMode('v1');
   }
 
@@ -8840,6 +9290,8 @@ async function main() {
   }
 
   function currentRoleHintV2() {
+    // 与 currentRoleHint 同一开关：关掉后二代也不再把角色卡塞进每条提示词。
+    if (cfg.role?.injectPerMessage === false) return '';
     // 先按 〔二代〕/〔一代〕 标记筛小节；下面的逐行过滤只是给「没标记的老卡片」兜底。
     const raw = roleHintForMode('v2');
     if (!raw) return '';
@@ -9139,6 +9591,8 @@ async function main() {
       if (topicHit || participantHit) t.lastMentionAt = Date.now();
     }
     saveSocialV2State();
+    // 自动偷图：不阻塞消息入库，失败只记日志。
+    void autoCollectStickerFromMessage(key, msg);
   }
 
   // 二代拍一拍事件写入最近/未读消息流，让 AI 能看到“谁拍了拍谁/拍了拍我”。
@@ -9784,7 +10238,22 @@ async function main() {
       if (pendingThoughts > 0) prob = Math.min(1, prob * 1.4);
       if (st.lastAiReplyAt && Date.now() - Number(st.lastAiReplyAt) < 30 * 60 * 1000) prob *= 0.5;
       const hour = new Date().getHours();
-      if (hour >= 23 || hour < 8) prob *= 0.3;
+      // 夜间窗口/概率可配：默认仍是 23~8 点 ×0.3，但允许配 absolute 夜间概率（例如 0~8 点 0.05）。
+      // 白天基率由 p.probability 决定；夜间命中窗口时用 p.nightProbability 覆盖基率，
+      // 其后的「刚说过话/发言过多」等折减照旧生效。
+      const nightStart = Number.isInteger(Number(p.nightStartHour)) ? Number(p.nightStartHour) : 23;
+      const nightEnd = Number.isInteger(Number(p.nightEndHour)) ? Number(p.nightEndHour) : 8;
+      const inNight = nightStart < nightEnd
+        ? (hour >= nightStart && hour < nightEnd)
+        : (hour >= nightStart || hour < nightEnd);
+      if (inNight) {
+        const nightProb = Number(p.nightProbability);
+        if (Number.isFinite(nightProb) && nightProb >= 0) {
+          prob = Math.min(1, Math.max(0, nightProb));
+        } else {
+          prob *= 0.3;
+        }
+      }
       const recent = Array.isArray(st.recentMessages) ? st.recentMessages : [];
       const aiCount = recent.filter((m) => m && m.isSelf && Date.now() - Number(m.time || 0) < 60 * 60 * 1000).length;
       if (aiCount >= 5) prob *= 0.3;
@@ -10363,6 +10832,7 @@ async function main() {
                 const learnerEnded = learnerCollector.push(frame.event);
                 if (learnerEnded) {
                   learnerCollectors.delete(frame.sessionId);
+                  learnerBusySessions.delete(frame.sessionId);
                   const waiters = learnerWaiters.get(frame.sessionId) ?? [];
                   const waiter = waiters.shift();
                   if (waiters.length === 0) learnerWaiters.delete(frame.sessionId);
@@ -10540,7 +11010,11 @@ async function main() {
                 }
               }
               if (ended.reason.kind === 'completed' && ended.text.trim()) {
-                const plain = mdToPlain(ended.text);
+                // 先剥掉模型误写进正文的工具名，再做 Markdown→纯文本；
+                // 顺序不能反：mdToPlain 会把 mcp__x__y 里的 __ 当粗体吃掉，剥不掉也认不出。
+                const sanitizedReply = stripToolNameLeak(ended.text);
+                if (sanitizedReply !== ended.text.trim()) log(`回复正文已剥离工具名残留 (${key})`);
+                const plain = mdToPlain(sanitizedReply);
                 // 纯 Markdown/空白输出按“无文本”处理，避免后续 planSocialTimeline 拿空串崩溃。
                 if (!plain.trim()) {
                   log(`agent 回复为空（仅格式/空白）(${key})`);
@@ -10553,6 +11027,13 @@ async function main() {
                       log(`社交模式：${key} 空退场回合，回到观望`);
                     }
                   }
+                  continue;
+                }
+                // 括号旁白（「（潜水，不是找我，不接话）」这类内心判断）绝不能发到群里：
+                // 典型场景是模型该发 [SILENT] 却没发、把决策写成了正文。拦下并当作静默。
+                if (isSilentNarration(plain)) {
+                  log(`已拦截静默旁白（不发送）(${key})：${plain.slice(0, 40)}`);
+                  appendActivity(`${key} 拦截静默旁白：${plain.slice(0, 60)}`);
                   continue;
                 }
                 // 社交模式静默标记：AI 主动选择“潜水/不接话”，不发送到 QQ
@@ -10585,7 +11066,10 @@ async function main() {
                 }
                 // 审计（对完整文本执行，避免截断漏判；这里只判断，不发送，避免双重发送）
                 const hasKnownToken = [...KNOWN_AGENT_TOKENS].some((t) => t && plain.includes(t));
-                if (shouldAuditKey(key) && (SENSITIVE_RE.test(plain) || hasKnownToken)) {
+                // reserved2 的文本输出不会发到 QQ（见下面的 'AI 内部输出（不自动转发）' 分支），
+                // 所以这里不能对它做"拦截并通知"——否则模型把思考/令牌写进正文时，
+                // 群里会收到一条"本条回复因敏感信息被拦截"的告警（2026-10-18 16:52 实际发生过）。
+                if (currentMode !== 'reserved2' && shouldAuditKey(key) && (SENSITIVE_RE.test(plain) || hasKnownToken)) {
                   log(`⚠️ 回复被安全策略拦截 (${key})，疑似包含敏感信息${hasKnownToken ? '（含会话令牌）' : ''}`);
                   appendActivity(`${key} agent 回复被拦截（疑似敏感信息${hasKnownToken ? '/会话令牌' : ''}）`);
                   if (cfg.security?.interceptNotify !== false) {
@@ -10651,8 +11135,9 @@ async function main() {
                     }
                   }
                 } else if (currentMode === 'reserved2') {
-                  log(`[reserved2] AI 内部输出（不自动转发）(${key}): ${plain.slice(0, 80)}`);
-                  appendActivity(`${key} [reserved2] AI 内部输出：${plain.slice(0, 80)}${plain.length > 80 ? '…' : ''}`);
+                  const internalPlain = shouldAuditKey(key) ? redactKnownTokensOnly(redactSensitiveText(plain)) : plain;
+                  log(`[reserved2] AI 内部输出（不自动转发）(${key}): ${internalPlain.slice(0, 80)}`);
+                  appendActivity(`${key} [reserved2] AI 内部输出：${internalPlain.slice(0, 80)}${internalPlain.length > 80 ? '…' : ''}`);
                 } else {
                   if (shouldBlockSilentReply(key)) {
                     log(`静默模式，拦截在途回复 (${key})`);

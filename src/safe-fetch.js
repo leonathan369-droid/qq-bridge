@@ -13,6 +13,19 @@ import { StringDecoder } from 'node:string_decoder';
 
 const dnsLookup = dns.promises.lookup;
 
+// 代理 fake-IP 兼容开关（默认关闭，保持上游的严格判定）。
+//
+// 背景：Clash / Surge / sing-box 等工具的 TUN + fake-IP 模式会把**所有**域名的 DNS
+// 结果换成一个保留段地址（典型是 198.18.0.0/15，本机实测 baidu 也解析到 198.18.0.14），
+// 真实流量由 utun 设备接管。此时「域名解析到内网 ⇒ 拒绝」会把全部公网抓取误杀，
+// 现象是图片/表情/web_fetch 全部报「域名解析到内网/本机地址，已阻止」。
+//
+// 开启后**只**放过 198.18.0.0/15 这一个 IETF 基准测试保留段；10/127/172.16/192.168/
+// 169.254/CGNAT 等真正的内网段仍然照常拦截，IPv6 判定完全不变。
+// 安全边界说明：fake-IP 环境里内网服务本来就不会解析到 198.18，因此放过该段不会
+// 让攻击者借此访问内网；这是「代理环境可用性」与「SSRF 防护」之间的显式取舍。
+const ALLOW_PROXY_FAKE_IP = process.env.QQ_BRIDGE_ALLOW_PROXY_FAKE_IP === '1';
+
 function withTimeout(promise, ms, label) {
   let timer;
   const timeout = new Promise((_, reject) => {
@@ -79,7 +92,7 @@ export function isPrivateIp(ip) {
     if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
     if (parts[0] === 192 && parts[1] === 168) return true;
     if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return true;
-    if (parts[0] === 198 && parts[1] >= 18 && parts[1] <= 19) return true;
+    if (parts[0] === 198 && parts[1] >= 18 && parts[1] <= 19 && !ALLOW_PROXY_FAKE_IP) return true;
     if (parts[0] === 192 && parts[1] === 0 && parts[2] === 0) return true;
     if (parts[0] >= 224) return true;
     return false;

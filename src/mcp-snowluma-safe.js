@@ -171,7 +171,11 @@ async function legacyReadToolAllowed() {
   return String(status?.mode ?? '') === 'closed-agent';
 }
 
+import { installMcpArgumentUnwrapper } from './mcp-arg-normalize.js';
+
 const server = new McpServer({ name: 'snowluma-safe', version: '0.2.0-r3' });
+// 必须在注册工具之前装：兜底模型把参数多包一层 {"arguments":{...}} 的情况。
+installMcpArgumentUnwrapper(server);
 
 // ── 工具开关必须在**注册期**生效，而不是只在校验期 ──────────────────────────
 //
