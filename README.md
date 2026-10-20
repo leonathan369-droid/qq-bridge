@@ -2,6 +2,11 @@
 
 **English**: [README.en.md](README.en.md) | **中文**: [README.md](README.md)
 
+> 🍴 本仓库是 [Derpyu520/qq-bridge](https://github.com/Derpyu520/qq-bridge)（MIT）的衍生版本，
+> 由 [leonathan369-droid](https://github.com/leonathan369-droid) 维护：面向 **macOS + LLBot** 做本机适配，
+> 并新增 DSH 设置页「QQ 桥接」控制中心（真实健康检查 / 一键启停 / 运行模式 / **QQ 专用模型与推理强度**）。
+> 上游的 OneBot 桥接业务逻辑保持不变；衍生改动与验证记录见 [docs/RELEASE-v0.3.0.md](docs/RELEASE-v0.3.0.md)。
+
 > 🗂️ 文档索引（全部文档一句话说明 + 是否仍然有效）见 **[docs/README.md](docs/README.md)**；仓库目录/脚本命名约定见 **[docs/FOLDER_MAP.md](docs/FOLDER_MAP.md)**。
 >
 > 🔒 QQ 会话的权限边界与安全承诺见 **[RULES.md](RULES.md)**。
