@@ -11,7 +11,7 @@
 >
 > The default branch `main` **is** this version — a plain `git clone` gets it, no branch switching needed.
 
-For the detailed Chinese guide, see **[docs/guides/PROJECT_GUIDE.md](docs/guides/PROJECT_GUIDE.md)**.
+For the detailed Chinese guide, see **docs/guides/PROJECT_GUIDE.md（不随仓库发布）**.
 The documentation index (one line per doc, with "still current?" notes) is **[docs/README.md](docs/README.md)**;
 the repository/folder and script-naming conventions are in **[docs/FOLDER_MAP.md](docs/FOLDER_MAP.md)**.
 
@@ -151,7 +151,7 @@ lives in the sibling folder **`../voice-tool/`** — it only needs SnowLuma, and
 
 ## Testing
 
-`npm run test:audit` runs isolated regression tests without production credentials, DSH, or QQ messages. The detailed audit is in [docs/audits/AUDIT_REPORT_2026-09-20.md](docs/audits/AUDIT_REPORT_2026-09-20.md) (Chinese); the 2026-09-18 one it superseded is archived in [docs/legacy/](docs/legacy/).
+`npm run test:audit` runs isolated regression tests without production credentials, DSH, or QQ messages. The detailed audit is in docs/audits/AUDIT_REPORT_2026-09-20.md（不随仓库发布） (Chinese); the 2026-09-18 one it superseded is archived in docs/legacy/（不随仓库发布）.
 
 After upgrading, legacy QQ session mappings without permission metadata are recreated once. Mode or preset changes also retire the old mapping and recreate the session on the next message; DSH history is retained.
 
