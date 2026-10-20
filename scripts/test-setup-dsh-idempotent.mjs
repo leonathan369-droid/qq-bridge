@@ -68,13 +68,23 @@ runSetup('第 2 次运行');
 
 const finalPatch = fs.readFileSync(path.join(tmpHome, 'profiles', 'web', 'cordis.patch.yml'), 'utf8');
 
-// 断言 1：每个托管 id 恰好出现一次
+// 断言 1：托管 MCP id 在 profile 全局层出现 0 次（2026-10-20 起移入 preset）
 let failed = 0;
 for (const id of ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe']) {
   const n = finalPatch.split('\n').filter((l) => new RegExp(`^\\s*-\\s*id:\\s*${id}\\s*$`).test(l)).length;
-  const ok = n === 1;
+  const ok = n === 0;
   if (!ok) failed += 1;
-  console.log(`${ok ? '✅' : '❌'} id ${id} 出现 ${n} 次（期望 1）`);
+  console.log(`${ok ? '✅' : '❌'} 全局层 id ${id} 出现 ${n} 次（期望 0，已移入 preset）`);
+}
+// 断言 1b：三个 MCP 出现在两个 preset 的生成产物里（各自恰好一次/每 preset）
+for (const preset of ['qq-chat', 'qq-chat-v2']) {
+  const patchFile = path.join(ROOT, 'plugins', 'qq-agent-presets', 'presets', `${preset}.patch.yml`);
+  const text = fs.readFileSync(patchFile, 'utf8');
+  for (const id of ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe']) {
+    const ok = text.split('\n').filter((line) => new RegExp(`^\\s*- id: ${id}\\s*$`).test(line)).length === 1;
+    if (!ok) failed += 1;
+    console.log(`${ok ? '✅' : '❌'} ${preset} preset 内含 ${id} 行`);
+  }
 }
 
 // 断言 2：旧路径已被替换为本仓库路径
@@ -99,7 +109,7 @@ if (doc) {
   console.log(`${ok ? '✅' : '❌'} YAML 顶层为数组（${Array.isArray(doc) ? doc.length + ' 项' : typeof doc}）`);
   if (!ok) failed += 1;
   const ids = doc.filter((e) => e?.insert).flatMap((e) => e.insert.map((x) => x.id));
-  console.log(`   解析出的 MCP id: ${ids.join(', ')}`);
+  console.log(`   解析出的全局 MCP id: ${ids.join(', ') || '(none，符合预期)'}`);
 }
 
 // 断言 5：profile package.json 含两个 bundle（qq-mode-console + qq-agent-presets），且未破坏其他 bundle

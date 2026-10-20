@@ -58,10 +58,10 @@
      - `mcp-snowluma`（`src/mcp-snowluma-safe.js`，带 `toolCallTimeoutMs: 725000`）
      - `mcp-snowluma-host`（`src/mcp-host-server.js`）
      - `mcp-web-search-safe`（`src/mcp-web-search-safe.js`）
-   - 在 `~/.dsh/profiles/web/package.json` 注册 `qq-mode-console` 与 `qq-agent-presets`（`dsh.profile.bundles` + `link:` 依赖），并维护 `node_modules` 下的 junction
+   - 在 `~/.dsh/profiles/web/package.json` 注册 `qq-mode-console`、`qq-agent-presets` 与 `qq-bridge-panel`（`dsh.profile.bundles` + `link:` 依赖），并维护 `node_modules` 下的 junction
    - 把 `qq-mode` 的默认模式设为 `reserved2`（二代仿真）
    - 创建本地 `state/mode.json`（`mode: reserved2`）作为 DSH settings 不可用时的兜底
-   - 尝试自动执行 `dsh plugin --profile web install`（当 `dsh` CLI 在 PATH 中可用时），注册两个插件的 bundle 依赖；若 `dsh` 不在 PATH，缺失依赖时 DSH 会提示补跑
+   - 尝试自动执行 `dsh plugin --profile web install`（当 `dsh` CLI 在 PATH 中可用时），注册三个插件的 bundle 依赖；若 `dsh` 不在 PATH，缺失依赖时 DSH 会提示补跑
 
    > 脚本可重复运行（幂等）：它会重建 `qq-agent-presets` 的 preset patch、更新 MCP 路径并重建失效的插件链接。
    > MCP 条目通过 YAML 解析后**按顶层 `insert` 内的条目 id 增删**（不依赖标记注释），支持带引号的 id、共享 `insert` 与行内 YAML，并保留其他插件配置和嵌套数据。
@@ -80,6 +80,9 @@
 
    > 默认模式为 **`reserved2`（二代仿真）**，即“文本不自动转发、AI 通过工具自主收发”。如果你想改用 `chat` / `closed-agent` / `reserved`，在**桥接控制台**（默认 `http://127.0.0.1:3100`）顶部按钮切换即可 —— 桥接会同时写入 DSH 设置与本地 `state/mode.json`，**无需重启**（每 5 秒轮询即时生效）。本地文件保存模式兜底与 `closedAgentPreset`；正常情况下模式以 DSH 设置为准，请通过控制台切换。
 
+   > 重启后打开 **DSH 设置 → QQ 桥接**：这一页由 `plugins/qq-bridge-panel` 提供，直接显示桥接控制台与 LLBot WebUI 的端口状态，可**启动/停止桥接**，并在端口就绪后一键**打开控制台 / 打开 LLBot WebUI**。面板只停止自己启动的桥接实例；终端/启动台启动的实例会提示「不是面板启动的」，避免误杀正在处理的 QQ 消息。LLBot 是第三方程序，默认只探测与打开，除非在 `config.json` 配置 `panel.llbotCommand` 才代管启停。
+   > 该插件默认从自身位置向上找桥接仓库（同时存在 `config.json` 与 `src/bridge.js`）。如果你不是用本仓库的 `setup-dsh.mjs` 安装（例如从 npm 装进 profile），请设置环境变量 `QQ_BRIDGE_DIR=/path/to/qq-bridge` 再启动 DSH。
+
 ## 验证是否装好
 
 离线安全回归：`node scripts/test-audit-setup.mjs` 与 `node scripts/test-audit-setup-guards.mjs`。后者直接执行两套 preset 的限制插件，验证本地工具、未声明工具与裸 `web_fetch` / `web_search` 被拒绝，而带 SSRF 防护的 `mcp__web-search-safe__*` 仍然可用。更新 preset 后需重新运行安装脚本并重启 DSH，现有 DSH 安装中的旧副本才会更新。
@@ -87,7 +90,7 @@
 0. **一键自检**：`npm run verify:adaptation` —— 覆盖 preset persona schema、bundle patch 与工具守卫、版本身份一致性、preset fail-closed 护栏，以及**运行中的 DSH 0.2.0 实测**（`qq-mode` 命名空间可列可写、`session/projections`、`session/control` 的 `projections` 形状、`stopSessionWork` 退役会话、`$events` ready 帧、`session/modelCatalog`、点号 endpoint 仍 404）等共 65 项断言。
    > 若你的环境禁止起子进程（例如在 DSH 的沙箱会话里跑），脚本内那批 `node --check` 语法检查会被**显式记为跳过**（`⏭`）而不是报假失败 —— 请在普通终端重跑以覆盖它们。
 1. **切换桥接模式**：打开桥接控制台（默认 `http://127.0.0.1:3100`），顶部的「聊天模式 / 封闭 Agent / 一代仿真模式 / 二代仿真模式」按钮即为当前生效的切换入口。控制台会同时写入 DSH 设置与本地 `state/mode.json`。
-   > ℹ️ DSH 设置页 `Plugins → Plugin configuration` 里**不会**出现 `qq-mode` 卡片：该槽位要求插件自带浏览器半（`package.json` 的 `dsh.client` + `lib/client.js`），而 `plugins/qq-mode-console` 只实现了 host 半。`qq-mode` 命名空间本身**可用**（`settings/describe` 能列出、`settings/update` 能写成功），缺的只是那张 GUI 表单 —— 所以模式改走控制台。参见下方「常见问题」。
+   > ℹ️ DSH 设置页里**没有** `qq-mode` 模式卡片：`plugins/qq-mode-console` 只实现了 host 半，而卡片要求插件自带浏览器半（`package.json` 的 `dsh.client` + `lib/client.js`）。`qq-mode` 命名空间本身**可用**（`settings/describe` 能列出、`settings/update` 能写成功），缺的只是那张模式表单 —— 所以模式切换仍走控制台。设置里的「QQ 桥接」页（`plugins/qq-bridge-panel`）是另一件事：只管端口状态、启停和打开控制台/LLBot，不承载模式切换。参见下方「常见问题」。
    > DSH 0.2.0 起命名空间**不再需要任何注册调用**：它由 profile 里 `id: qq-mode` 那条 loader entry + 插件导出的 `Config`（带 `volatile` 字段）推导出来。0.1.x 的 `ctx.settings.register()` 已被 DSH 删除。
 2. **新建会话时**：agent preset 列表中应能看到：
    - `QQ 聊天角色`（`qq-chat`）
@@ -106,14 +109,16 @@
   3. **再考虑升级 SnowLuma**（见 [../../README.md](../../README.md) 的「SnowLuma 版本与上游健康」）。⚠️ 但先别指望它：**实测注入用的原生组件在 1.14.9 与 1.14.20 之间逐字节完全相同**，升级只换 JS 层，**不会修「原生 hook 挂不上 QQ」**。**升级 SnowLuma 是你自己的事**——本桥接只探测、不部署。
   4. 顺带确认 QQ 客户端本身是登录状态、没有被顶号；较新的 SnowLuma（**1.14.20 已确认**）会通过 `bot_status` 事件把账号上下线告诉我们，桥接日志里会打「QQ 账号会话已离线」。
   > 桥接**没有**任何原生/注入面（依赖全纯 JS，源码里没有 `.dll`/`.node`/FFI/进程注入），也不启动、不控制 SnowLuma 或 QQ，所以「QQ 注入失败」不可能是本桥接造成的。
-- **看不到 `qq-mode` 设置卡片**：这是**已知限制**，不是配置错误。DSH 的 `settings.plugin.item` 槽位只渲染「host 已注册的命名空间 ∩ 声明了该 key 的卡片」，而卡片必须由插件的**浏览器半**（`package.json` 的 `dsh.client` + `lib/client.js`）注册；`plugins/qq-mode-console` 目前只有 host 半。反复重跑 `setup-dsh.mjs` 或重启 DSH 都不会让卡片出现。要真正修好需补一个 `lib/client.js`。
+- **看不到 `qq-mode` 模式卡片**：这是**已知限制**，不是配置错误。DSH 的 `settings.plugin.item` 槽位只渲染「host 已注册的命名空间 ∩ 声明了该 key 的卡片」，而卡片必须由插件的**浏览器半**（`package.json` 的 `dsh.client` + `lib/client.js`）注册；`plugins/qq-mode-console` 目前只有 host 半。反复重跑 `setup-dsh.mjs` 或重启 DSH 都不会让模式卡片出现。
+  - 需要的是**开关**而不是模式表单时，用设置里的「QQ 桥接」页（`plugins/qq-bridge-panel`，自带浏览器半）：能启停桥接并打开控制台/LLBot；**模式切换仍在控制台**。
+  - 想把模式表单也搬进设置页，需要给 `qq-mode-console` 补一个 client 半（`dsh.client` + `lib/client.js` + `settings.section` 注册），目前没有做。
 - **改了模式却不生效 / 5 秒后被改回去**：**此问题已在 `src/bridge.js` 修复**（桥接需重启后生效）。历史成因：`refreshMode()` 每 5 秒被 `checkDsh` 调用一次，先读 DSH 的 `qq-mode` 命名空间，只要有合法值就**直接 return，完全忽略本地 `state/mode.json`**；而命名空间的默认值始终存在，所以 DSH 侧永远有值 —— 于是控制台写本地文件会在下一次轮询被覆盖回滚。现在 `POST /api/mode` 会**写穿到 DSH 设置**（`api.settings.update({ ns: 'qq-mode', patch: { mode } })`），响应里新增 `dshSynced` 字段；若写穿失败（DSH 未运行等）会记日志并保留本地值。注意 `settings/update` 在 0.2.0 是**多参数** RPC：args 是 `{ ns, patch, expectedRevision }` 平铺，**不是** `{ request: {...} }`（传 request 会被网关拒为 `gateway/arguments-invalid`）。同源问题：`closedAgentPreset` 在 DSH schema 里不存在，原先也因这个提前 return 而失效，现已改为始终以本地 `state/mode.json` 为准。若仍看到回滚，检查桥接日志里是否有「写穿 DSH 设置失败」。
 - **MCP 工具没有出现**：确认 `cordis.patch.yml` 中三个 MCP 条目的路径指向当前仓库，并重启 DSH。
 - **preset 没有出现**：DSH 0.1.7 起 preset **不再**是 `~/.dsh/.agent-presets/<名>/` 目录（该目录完全不被读取）。preset 现在是 profile 里的一条 `@deepseek-ai/dsh-agent-preset` 行，由 `plugins/qq-agent-presets` 这个 bundle 提供。检查 profile 的 `package.json` 的 `dsh.profile.bundles` 是否含 `qq-agent-presets`、`dependencies` 是否有对应的 `link:`，以及 `~/.dsh/profiles/web/node_modules/qq-agent-presets` 链接是否存在；缺了就重跑 `node scripts/setup-dsh.mjs` 再重启 DSH。桥接里可用 `npm run probe:protocol` / `npm run verify:adaptation` 确认 `agentPresets/list` 里能看到 `qq-chat`、`qq-chat-v2`。
 - **启动 DSH 报 `failed to parse overlay cordis.patch.yml: YAMLException`**：多为历史版脚本残留的空数组 `[]` 引发。重新运行最新版脚本（会自动剥离）即可，或手动删除该文件里独立成行的 `[]` 后重启 DSH。
-- **启动 DSH 报 `cannot resolve profile bundle "qq-mode-console"`**：profile 的 bundle 依赖尚未安装。运行 `dsh plugin --profile web install`（`web` 换成你的实际 profile 名）后重启 DSH；新版脚本会尝试自动执行这一步。
+- **启动 DSH 报 `cannot resolve profile bundle "qq-mode-console"` / `"qq-bridge-panel"`**：profile 的 bundle 依赖尚未安装。运行 `dsh plugin --profile web install`（`web` 换成你的实际 profile 名）后重启 DSH；新版脚本会尝试自动执行这一步。
 - **启动 DSH 报 `failed to apply loader entry persona (@deepseek-ai/dsh-persona): invalid config: $.prefix missing required value`**：preset 的 persona 段缺少 `prefix`。DSH 0.1.5 起 `dsh-persona` 只接受 `prefix` / `suffix` / `complete` / `includeRuntimeContext`，而旧写法用的是 `text` —— schemastery 的 `z.object` 非 strict，未知键会被**静默忽略**，于是真正报出来的是「缺 `prefix`」（**不是**「`text` 这个键被拒绝」）。重新运行 `node scripts/setup-dsh.mjs`（本仓库 preset 已改为 `prefix`），或手动把 preset 里的 `text:` 改成 `prefix:`。可用 `node scripts/verify-persona-config.mjs` 提前自检。
-- **profile 的 bundle 条目被重置**：升级 DSH 可能重置 `~/.dsh/profiles/web/package.json`，把 `qq-mode-console` 的依赖与 bundle 条目删掉（症状是启动报 `cannot resolve profile bundle`，或桥接读不到 `qq-mode` 设置值）。重新运行 `node scripts/setup-dsh.mjs`，再跑 `dsh plugin --profile web install` 并重启 DSH。
+- **profile 的 bundle 条目被重置**：升级 DSH 可能重置 `~/.dsh/profiles/web/package.json`，把 `qq-mode-console`（及 `qq-bridge-panel`）的依赖与 bundle 条目删掉（症状是启动报 `cannot resolve profile bundle`，或桥接读不到 `qq-mode` 设置值）。重新运行 `node scripts/setup-dsh.mjs`，再跑 `dsh plugin --profile web install` 并重启 DSH。
 - **QQ preset 挂载失败，群里 AI 完全没反应**：`chat` / `reserved` / `reserved2`（会话可能属于 QQ 群）**必须**挂上 `qq-chat` / `qq-chat-v2`，否则桥接**直接拒绝建会话**并打日志 `⛔ 群聊/仿真会话缺少 preset …`——QQ 上表现为「发了消息没人回」，而桥接日志里能查到原因。这是有意的 fail-closed 设计：**「无 preset 会话」= DSH 默认 preset（通常 `standard`，含 bash/文件读写）**，降级过去等于把本地工具暴露给群里的任何人。`closed-agent` 模式（仅 owner 私聊）是唯一例外，那里本就使用完整工具面，允许回落。修复：确认 `plugins/qq-agent-presets` bundle 已注册进 profile（`bundles` + `link:` 依赖 + `node_modules` junction 三者齐备，跑 `node scripts/setup-dsh.mjs` 可自动补齐）并重启 DSH；若手改过 `config.json` 的 `agentPreset`，确认该名字确实在 DSH 的 preset 清单里。
 - **发送消息报 `unauthorized` / HTTP 401**：`config.json` 的 `snowluma.accessToken` 与 SnowLuma 的 OneBot 实例 token 不一致。将 SnowLuma WebUI 中 HTTP 与 WebSocket 两端的 accessToken 设为相同，再填入 `config.json`，然后重启桥。
 - **DSH 侧 401/鉴权失败**：DSH 0.1.7 起进程启动 token 是**每进程现生成、只存在内存**的随机数（不落盘、不可推导），旧版「从 `~/.dsh/guard/logs/server-*.out.log` 里读 token」的办法已经失效（读到的是上一个进程的陈旧 token，换 Cookie 只会 401）。桥接现在**默认离线铸造 Cookie**：读 `~/.dsh/.credentials.yaml` 里持久化的 `client-connection/browser-session` 签名密钥自签一个会话 Cookie，不依赖任何进程期状态。`config.json` 的 `dsh.authToken` 一般应留空；只有显式填了才会优先走 token 交换。若报鉴权失败，先确认 `DSH_HOME` 指向真正的 `.dsh` 目录、且该文件里有 `client-connection/browser-session` 记录。`npm run test:dsh-auth`（17 项断言）与 `npm run self-test` 可快速定位。

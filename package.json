@@ -42,6 +42,7 @@
     "verify:persona": "node scripts/verify-persona-config.mjs",
     "test:mcp-servers": "node scripts/test-mcp-servers-stdio.mjs",
     "test:plugin": "node scripts/test-qq-mode-plugin.mjs",
+    "test:panel": "node scripts/test-panel-host.mjs",
     "test:setup-idempotent": "node scripts/test-setup-dsh-idempotent.mjs",
     "test:mux-reconnect": "node scripts/test-mux-reconnect.mjs",
     "probe:events": "node scripts/probe-events.mjs",

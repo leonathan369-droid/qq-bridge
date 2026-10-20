@@ -58,14 +58,21 @@ try {
       const doc = yaml.load(fs.readFileSync(f.patchFile, 'utf8'));
       const entries = doc.flatMap((op) => op.insert || []);
       assert.deepEqual(entries.find((entry) => entry.id === 'custom'), originalCustom);
+      // 2026-10-20 工具隔离起：旧的全局 MCP 条目必须被清理（迁移到 preset），
+      // 且不能再写回全局层；MCP 行只出现在两个 preset 的生成产物里。
       for (const id of ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe']) {
-        assert.equal(entries.filter((entry) => entry.id === id).length, 1, `${id} duplicate`);
+        assert.equal(entries.filter((entry) => entry.id === id).length, 0, `${id} must not stay global`);
       }
-      assert.equal(entries.find((entry) => entry.id === 'mcp-snowluma').config.toolCallTimeoutMs, 725000);
+      for (const preset of ['qq-chat', 'qq-chat-v2']) {
+        const presetPatch = fs.readFileSync(path.join(f.repo, 'plugins', 'qq-agent-presets', 'presets', `${preset}.patch.yml`), 'utf8');
+        for (const id of ['mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe']) {
+          assert.equal(presetPatch.split('\n').filter((line) => new RegExp(`^\\s*- id: ${id}\\s*$`).test(line)).length, 1, `${preset} must carry ${id}`);
+        }
+      }
     }
     const pkg = JSON.parse(fs.readFileSync(path.join(f.home, 'profiles/web/package.json')));
     assert.equal(pkg.dependencies.existing, '1.0.0');
-    assert.deepEqual(pkg.dsh.profile.bundles, ['existing', 'qq-mode-console', 'qq-agent-presets']);
+    assert.deepEqual(pkg.dsh.profile.bundles, ['existing', 'qq-mode-console', 'qq-agent-presets', 'qq-bridge-panel']);
   });
 
   test('legacy root [] is repaired without altering literal strings', () => {

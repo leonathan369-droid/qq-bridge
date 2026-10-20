@@ -1,0 +1,22 @@
+# ============================================================================
+# qq-bridge-panel —— 「QQ 桥接」设置页 + host 侧路由
+# ============================================================================
+# 这个 bundle 只做两件事：
+#   1. 在 DSH 设置左侧导航里加一页「QQ 桥接」（client 半，client.js 注册
+#      `settings.section`，写法与 dsh-bili-scroll 相同）；
+#   2. 在 host 进程里注册同源路由 `/qq-bridge-panel/{status,start,stop,open}`，
+#      由 host 半读取桥接的 config.json、探测端口、spawn 子进程，并用系统默认
+#      浏览器打开控制台 / LLBot WebUI。
+#
+# 为什么打开动作必须落在 host 半：DSH 桌面壳的 `setWindowOpenHandler` 只对
+# `https:` 调 shell.openExternal（app.asar/lib/main.js），`<a target="_blank">`
+# 指向 `http://127.0.0.1:3101` 会被 deny。所以页面只发请求，真正 `open` 由
+# host 进程执行；Web 壳里同样走这条路由，两种壳行为一致。
+#
+# 本 bundle 不拥有 `qq-mode` 设置命名空间（那仍由 qq-mode-console 提供），
+# 因此两者可以并存、互不覆盖。
+- insert:
+    - id: qq-bridge-panel
+      name: qq-bridge-panel
+      config: {}
+
