@@ -152,9 +152,10 @@ test('MCP validates/forwards read watermarks and wait purposes against an isolat
     // Descendant modules resolve the project's dependencies; no credentials,
     // live config or user runtime state are copied into this test fixture.
     fixture = await fs.mkdtemp(path.join(ROOT, '.tmp-model-view-test-'));
-    await fs.mkdir(path.join(fixture, 'src'));
-    await Promise.all(['mcp-snowluma-safe.js', 'qq-model-view.js', 'sensitive.js'].map((name) =>
-      fs.copyFile(path.join(ROOT, 'src', name), path.join(fixture, 'src', name))));
+    // 整个 src/ 一起拷：曾经用 3 文件白名单，src 里一加新模块（mcp-arg-normalize.js）
+    // 子进程就 ERR_MODULE_NOT_FOUND 直接退出，父进程只看到 MCP "Connection closed"，
+    // 完全看不出真正原因。宁可变慢一点，也不让「新依赖没进 fixture」再复发。
+    await fs.cp(path.join(ROOT, 'src'), path.join(fixture, 'src'), { recursive: true });
     await fs.writeFile(path.join(fixture, 'config.json'), JSON.stringify({ consolePort: api.address().port }));
     const transport = new StdioClientTransport({
       command: process.execPath,

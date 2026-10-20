@@ -3,8 +3,8 @@ import { bridgeHarness } from './audit-bridge-harness.mjs';
 import http from 'node:http';
 
 let failures = 0;
-async function test(name, run) {
-  const h = await bridgeHarness();
+async function test(name, run, harnessOptions = {}) {
+  const h = await bridgeHarness(harnessOptions);
   try { await run(h); console.log('PASS', name); }
   catch (error) { failures++; console.error('FAIL', name, error.message); }
   finally { await h.close(); }
@@ -69,14 +69,61 @@ await test('same-policy sessions are reused but legacy unlabelled sessions are r
   delete h.state.sessionPolicies['private:123'];
   assert.notEqual(await h.ensureSession('private:123'), first);
 });
-await test('reset during model selection cannot return a detached session', async (h) => {
+// 2026-10-21 模型作用域改造后的两条不变量：
+//   ① 默认（dsh.modelScope=session）下，QQ 会话模型走面板 host 的「会话局部应用」，
+//      **绝不能**再调 api.sessions.selectModel（那会连带写 DSH 全局默认模型）；
+//   ② 无论走哪条路径，模型应用期间发生 reset（代际变化）都不能把"已脱离"的会话返回给调用方。
+await test('QQ session model application defaults to the session-scoped panel route (never selectModel)', async (h) => {
+  let selectModelCalls = 0;
+  const originalSelect = h.api.sessions.selectModel;
+  h.api.sessions.selectModel = async (...args) => {
+    selectModelCalls += 1;
+    return originalSelect(...args);
+  };
+  await h.ensureSession('private:123');
+  assert.equal(selectModelCalls, 0, '默认作用域不允许调用 session/selectModel（它会写全局默认模型）');
+  const applyCalls = h.calls.http.filter((call) => String(call.url).includes('/qq-bridge-panel/model/apply'));
+  assert.equal(applyCalls.length, 1, `应调用面板的会话局部应用接口，实际 ${JSON.stringify(h.calls.http.map((c) => c.url))}`);
+  assert.equal(applyCalls[0].body.provider, h.cfg.dsh.provider);
+  assert.equal(applyCalls[0].body.sessionId, h.state.sessions['private:123']);
+});
+
+await test('reset during model selection cannot return a detached session（旧路径 dsh.modelScope=global）', async (h) => {
+  // 旧路径仍然可选（显式 opt-in），这条不变量对它同样必须成立。
   h.api.sessions.selectModel = async () => {
     h.resetEpoch();
     return { result: { ok: true, value: { selected: {} } } };
   };
   await assert.rejects(h.ensureSession('private:123'));
   assert.equal(h.state.sessions['private:123'], undefined);
-});
+}, { config: { dsh: { modelScope: 'global' } } });
+
+// 会话作用域路径的同一条不变量：把面板 apply 调用换成「调用即 reset」。
+{
+  const ref = {};
+  const h = await bridgeHarness({
+    globals: {
+      fetch: async (url) => {
+        if (String(url).includes('/qq-bridge-panel/model/apply')) {
+          ref.reset?.();
+          return { ok: true, status: 200, json: async () => ({ ok: true, selected: { provider: 'fixture', model: 'fixture' } }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ ok: true, data: {} }) };
+      },
+    },
+  });
+  ref.reset = h.resetEpoch;
+  try {
+    await assert.rejects(h.ensureSession('private:123'));
+    assert.equal(h.state.sessions['private:123'], undefined);
+    console.log('PASS reset during model application cannot return a detached session（会话作用域路径）');
+  } catch (error) {
+    failures++;
+    console.error('FAIL reset during model application cannot return a detached session（会话作用域路径）', error.message);
+  } finally {
+    await h.close();
+  }
+}
 await test('malformed HTTP request targets return 400 without hanging', async (h) => {
   const server = h.startConsoleServer();
   if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
@@ -160,8 +207,11 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     assert.ok(!names.some((n) => n.includes(h.temp)), '语音库不返回绝对路径');
 
     // 1) AI 只能按语音库名字取文件
+    // 解析侧返回的是 fs.realpathSync 规范化后的路径（src/voice-core.js 的 safeJoinLibrary），
+    // 而 macOS 的 os.tmpdir() 是 /var/folders/...（真实路径 /private/var/...），
+    // 直接和未规范化的期望值比会永远不等。用 realpath 比 realpath。
     const okPath = h.resolveVoicePathForV2('hello');
-    assert.equal(okPath.path, path.join(audioDir, 'hello.mp3'), 'AI 省略扩展名也能命中语音库文件');
+    assert.equal(fs.realpathSync(okPath.path), fs.realpathSync(path.join(audioDir, 'hello.mp3')), 'AI 省略扩展名也能命中语音库文件');
 
     // 2) 绝对路径默认被拒（防 prompt injection 拿任意本地文件外发）
     assert.throws(() => h.resolveVoicePathForV2(outside), /语音库|绝对路径/, 'AI 传库外绝对路径被拒');
@@ -179,7 +229,7 @@ await test('malformed HTTP request targets return 400 without hanging', async (h
     assert.equal(call.body.group_id, 456, '语音发给正确群');
     assert.equal(call.body.message.length, 1, '语音只发一个段');
     assert.equal(call.body.message[0].type, 'record', '段类型是 record');
-    assert.equal(call.body.message[0].data.file, path.join(audioDir, 'hello.mp3'), 'record 段指向库内绝对路径');
+    assert.equal(fs.realpathSync(call.body.message[0].data.file), fs.realpathSync(path.join(audioDir, 'hello.mp3')), 'record 段指向库内绝对路径');
     assert.equal(sent.messageId, 9001, '返回网关 message_id');
     assert.equal(sent.readback, null, '显式关掉回读时不调 fetch_ptt_text');
 

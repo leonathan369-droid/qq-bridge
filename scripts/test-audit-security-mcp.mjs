@@ -6,6 +6,15 @@ import vm from 'node:vm';
 import { test } from 'node:test';
 import { z } from 'zod';
 
+// 这些 src 模块里新增的**本地** import 在 vm 里不会被解析（上面把 import 行整行删掉了），
+// 因此必须在这里补同名桩，否则报 ReferenceError 而不是被测逻辑失败。
+// 规则：`src/*.js` 新增一条 `import { x } from './y.js'` 时，这个表里就要有 `x`。
+const LOCAL_IMPORT_STUBS = {
+  // mcp-arg-normalize.js：给 MCP SDK 的 CallTool handler 包一层入参摊平。
+  // 这个测试只验证工具回调，不需要真的 patch 传输层，桩成空函数即可。
+  installMcpArgumentUnwrapper: (server) => server,
+};
+
 function loadWebTools(safeFetch) {
   const tools = new Map();
   const source = fs.readFileSync(new URL('../src/mcp-web-search-safe.js', import.meta.url), 'utf8')
@@ -15,7 +24,7 @@ function loadWebTools(safeFetch) {
     tool(name, description, schema, callback) { tools.set(name, { schema, callback }); }
     connect() {}
   }
-  vm.runInNewContext(source, { safeFetch, McpServer, StdioServerTransport: class {}, z, URL });
+  vm.runInNewContext(source, { ...LOCAL_IMPORT_STUBS, safeFetch, McpServer, StdioServerTransport: class {}, z, URL });
   return async (name, arguments_) => {
     const tool = tools.get(name);
     return tool.callback(z.object(tool.schema).parse(arguments_));
@@ -76,6 +85,7 @@ function loadSnowlumaTools(fetchImpl, fixtureConfig = null) {
     },
   };
   vm.runInNewContext(source, {
+    ...LOCAL_IMPORT_STUBS,
     McpServer,
     StdioServerTransport: class {},
     z,

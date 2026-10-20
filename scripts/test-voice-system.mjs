@@ -180,9 +180,21 @@ console.log('## qq-bridge 语音系统：控制台与 preset');
 
 console.log('## 文档');
 {
-  const voice = read(path.join('docs', 'guides', 'VOICE.md'));
-  for (const needle of ['图形界面', 'voice-gui.mjs', 'voice-cli.mjs', '默认是关的', '发语音-图形界面.cmd']) {
-    ok(voice.includes(needle), 'docs/guides/VOICE.md 提到「' + needle + '」');
+  // docs/guides/VOICE.md 按仓库约定**不进新仓库**：docs/FOLDER_MAP.md:86 与
+  // docs/guides/PRIVACY.md:91 都写明它含真实 QQ 号/群号与本机路径，属于「不带进
+  // 新仓库」的内部文档。以前这里无条件 read()，于是公开检出上必然 ENOENT 崩掉整段
+  // （原始 HEAD 上就是红的）。这里改成：文件在就逐条校验，不在就**明确说明原因**
+  // 并只校验仍然存在的 README / docs 索引，不做静默跳过。
+  const voiceDoc = path.join('docs', 'guides', 'VOICE.md');
+  if (exists(voiceDoc)) {
+    const voice = read(voiceDoc);
+    for (const needle of ['图形界面', 'voice-gui.mjs', 'voice-cli.mjs', '默认是关的', '发语音-图形界面.cmd']) {
+      ok(voice.includes(needle), 'docs/guides/VOICE.md 提到「' + needle + '」');
+    }
+  } else {
+    console.log('  ⏭  跳过 docs/guides/VOICE.md 的 5 条断言：该文档按 FOLDER_MAP/PRIVACY 的约定');
+    console.log('     不进公开仓库（含真实 QQ 号与本机路径），本机未生成脱敏版。');
+    ok(read(path.join('docs', 'FOLDER_MAP.md')).includes('VOICE.md'), 'docs/FOLDER_MAP.md 说明了 VOICE.md 的排除约定');
   }
   const readme = read('README.md');
   ok(readme.includes('voice-gui.mjs') && readme.includes('voice-cli.mjs'), 'README 含两个语音工具的入口说明');

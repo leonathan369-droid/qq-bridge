@@ -1,0 +1,19 @@
+# 行尾策略：让「检出即正确」，不依赖各人 core.autocrlf 设置。
+#
+# 背景（2026-10-21 回归修）：仓库原先没有 .gitattributes，Windows 批处理在这些机器上
+# 检出成 LF。scripts/test-audit-setup-guards.mjs 要求 .bat 必须是 CRLF（cmd.exe 对
+# LF 批处理有已知的 goto/label 解析问题），于是在 macOS 上这条断言必红，而 Windows
+# 上又因为作者本地的 core.autocrlf 而误绿。把规则写进仓库后两个平台一致。
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+# 二进制资产：不要做行尾/文本归一化
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.mp4 binary
+*.zip binary
+*.tar.gz binary

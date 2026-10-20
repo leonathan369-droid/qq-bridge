@@ -38,7 +38,11 @@ console.log('## 乱码机制（字节级）');
 }
 
 console.log('## chcp 可用性');
-{
+if (process.platform !== 'win32') {
+  // chcp 是 Windows 控制台内置命令。macOS/Linux 上必然 ENOENT —— 这是平台不适用，
+  // 不是被测代码的问题，所以显式跳过（以前 ENOENT 会落进 ok(!r.error) 判失败）。
+  console.log(`  ⏭  跳过：当前平台 ${process.platform} 没有 chcp（这项只验证 Windows 控制台机制）`);
+} else {
   const r = spawnSync('chcp', ['65001'], { encoding: 'latin1', windowsHide: true });
   if (r.error?.code === 'EPERM' || r.error?.code === 'EACCES') {
     // 受限沙箱（DSH workspace-write / 只读）不允许 spawn 捕获输出的子进程。

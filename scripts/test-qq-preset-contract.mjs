@@ -13,14 +13,22 @@ const prefix = persona?.config?.prefix ?? '';
 
 test('reserved2 YAML resolves to the expected persona and template variables', () => {
   assert.equal(persona?.name, '@deepseek-ai/dsh-persona');
-  assert.match(prefix, /\{\{model\}\}/);
+  // 本地定制（见 preset 文件头注释）：首句改成「QQ 群友」角色卡，不再用 {{model}}
+  // 编码 agent 头句，避免模型自我介绍成 AI / 编程助手。{{cwd}} 仍由 DSH 注入。
+  assert.ok(prefix.startsWith('【角色设定'), 'prefix 应以角色卡开头');
+  assert.equal(/\{\{\w+\}\}/.test(prefix), false, '角色卡 prefix 不应残留未替换的模板变量');
   assert.match(persona.config.suffix, /\{\{cwd\}\}/);
   assert.equal(Object.hasOwn(persona.config, 'text'), false);
 });
 
 test('local/admin tool restrictions and existing compaction budgets stay intact', () => {
+  // 2026-10-20 工具隔离起多了 4 个条目：全局工具动态拒绝守卫 + 3 个 QQ MCP server。
+  // 它们必须是 preset 作用域的（挂在这里而不是 profile 全局层），否则普通会话也会看到 QQ 工具。
   assert.deepEqual(preset.map((row) => row.id), [
-    'persona', 'tool-web', 'tool-ask-user', 'tool-todo', 'qq-tool-restrict', 'compaction',
+    'persona', 'tool-web', 'tool-ask-user', 'tool-todo', 'qq-tool-restrict',
+    'qq-global-tool-deny',
+    'mcp-snowluma', 'mcp-snowluma-host', 'mcp-web-search-safe',
+    'compaction',
   ]);
   assert.deepEqual(preset.find((row) => row.id === 'tool-web').config, { search: false, fetch: false });
   assert.equal(preset.find((row) => row.id === 'qq-tool-restrict').name, './qq-tool-restrict.mjs');

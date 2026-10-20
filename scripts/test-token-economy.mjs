@@ -267,7 +267,10 @@ await test('an in-flight wait cannot authorize new messages after its session to
 
 await test('an in-flight wait cannot write observation into a replaced conversation state', async ({ h, st, request, append }) => {
   append('old state');
-  const waiting = request('wait', { body: { timeoutMs: 100, quietMs: 0 } });
+  // timeoutMs 必须 >= preSleepWaitMs(1000)，否则命中「已有未读立即返回」快路径
+  // （2026-10-18 为降低私聊回复延迟所加），请求在吊销定时器触发前就已返回，
+  // 根本不存在「在途」窗口 —— 这条用例要验证的是慢路径的复核。
+  const waiting = request('wait', { body: { timeoutMs: 1000, quietMs: 0 } });
   const timer = setTimeout(() => {
     h.socialV2.conversations.delete(KEY);
     append('new conversation state');
@@ -318,7 +321,8 @@ await test('an in-flight wait rechecks paused, feature, tool and allowlist permi
     observedAt: st.preSleepWaitObservedAt, satisfiedAt: st.preSleepWaitSatisfiedAt });
   for (const [label, revoke, restore] of cases) {
     const snapshot = before();
-    const waiting = request('wait', { body: { timeoutMs: 100, quietMs: 0 } });
+    // 同上前提：>= preSleepWaitMs 才会走慢路径（否则命中有未读立即返回的快路径）。
+    const waiting = request('wait', { body: { timeoutMs: 1000, quietMs: 0 } });
     const timer = setTimeout(revoke, 60);
     let result;
     try { result = await waiting; } finally { clearTimeout(timer); restore(); }
@@ -327,6 +331,25 @@ await test('an in-flight wait rechecks paused, feature, tool and allowlist permi
     assert.deepEqual(before(), snapshot, `${label} cannot modify observation, unread or wake config`);
   }
 }, { observe: true });
+
+await test('a short wait with pre-existing unread returns the backlog immediately instead of sleeping', async ({ h, st, request, append }) => {
+  // 2026-10-18 行为：模型刚发完一条、紧接着调等待时，未读缓冲里已有对方的消息。
+  // 旧实现只把「本请求期间新到的消息」算作到达，于是这种情形会白睡满 timeout
+  // （实测私聊回复被从 ~15 秒拖到 87~110 秒）。快路径的语义是「现在就有事可做」。
+  append('backlog one');
+  append('backlog two');
+  const started = Date.now();
+  const result = await request('wait', { body: { timeoutMs: 100, quietMs: 0 } });
+  const elapsed = Date.now() - started;
+  assert.equal(result.status, 200);
+  assert.equal(result.data.alreadyPending, true);
+  assert.equal(result.data.arrived, true);
+  assert.deepEqual(seqs(result.data.newMessages), [1, 2]);
+  assert.equal(result.data.readThroughSeq, 2, 'fast path hands the messages over, so the receipt must cover them');
+  assert.ok(elapsed < 500, `fast path must not sleep the timeout (took ${elapsed}ms)`);
+  // 快路径同样不能写「沉睡前观察」状态：它没有观察动作。
+  assert.equal(st.preSleepWaitSatisfiedAt, 0);
+});
 
 await test('oversized first stored unread remains intact and cannot be skipped by the snapshot', async ({ h, st, request, append }) => {
   h.cfg.socialV2.context.wakeMaxChars = 500;

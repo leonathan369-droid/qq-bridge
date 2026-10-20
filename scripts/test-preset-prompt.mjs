@@ -45,7 +45,9 @@ test('一代与二代的硬性不变量清单确实不同（防止又合并成�
 test('真实预设能定位到 persona 的 prefix 块', () => {
   const loc = locatePresetPromptBlock(source);
   assert.ok(loc, '应能定位 prefix 块');
-  assert.equal(loc.lines[loc.keyLine].trim(), 'prefix: >-');
+  // 块样式随内容变化：YAML 折叠标量(>-)会把换行折叠成空格，角色卡要保留段落换行
+  // 所以改成了字面块(|-)。这里只断言「是可定位的块标量」，不再钉死具体样式。
+  assert.match(loc.lines[loc.keyLine].trim(), /^prefix: [>|][-+]?$/);
   assert.ok(loc.blockEnd > loc.keyLine + 1, 'prefix 块应包含内容行');
   assert.ok(loc.entryEnd > loc.blockEnd, 'persona 条目应在 prefix 块之后还有内容');
 });
@@ -56,7 +58,8 @@ test('抽出的是 YAML 解析后的真实字符串（折叠标量已展开）',
   for (const marker of PRESET_REQUIRED_MARKERS) {
     assert.ok(originalPrefix.includes(marker), `内置提示词应包含安全基线段落：${marker}`);
   }
-  assert.ok(originalPrefix.includes('{{model}}'), '应保留模板变量');
+  // 角色卡正文不使用模板变量（首句不再是 {{model}} 头句）；{{cwd}} 由 suffix 承载。
+  assert.equal(/\{\{\w+\}\}/.test(originalPrefix), false, '角色卡 prefix 不应残留未替换的模板变量');
 });
 
 test('原样写回是幂等的，且不改变提示词语义', () => {
@@ -133,32 +136,38 @@ test('删掉安全不变量或正文过短时阻断保存（保护 AI 效果与�
 });
 
 test('写回沿用文件主导行尾，且不吞掉块尾空行', () => {
-  const next = renderPresetPromptYaml(source, originalPrefix);
+  // 不能依赖「仓库里这份文件恰好是 CRLF」：仓库没有 .gitattributes 时 macOS 检出是 LF，
+  // 这条断言就会随人的 git 配置时绿时红（实测原始 HEAD 上就是红的）。
+  // 这里显式构造一份 CRLF 源文本，稳定验证「CRLF 进 → CRLF 出」。
+  const sourceCrlf = source.replace(/\r?\n/g, '\r\n');
+  const next = renderPresetPromptYaml(sourceCrlf, originalPrefix);
   const crlf = (next.match(/\r\n/g) ?? []).length;
   const lfOnly = (next.match(/\n/g) ?? []).length - crlf;
   assert.ok(crlf > 0, 'CRLF 文件写回后应仍使用 CRLF');
   assert.equal(lfOnly, 0, '写回后不应残留/新增 LF-only 行');
   assert.ok(next.includes('prefix: |-\r\n'), '新增行应使用 CRLF');
   // 块之后的内容（空行、注释、后续条目）必须逐字保留
-  const before = locatePresetPromptBlock(source);
+  const before = locatePresetPromptBlock(sourceCrlf);
   const after = locatePresetPromptBlock(next);
   assert.deepEqual(
     next.split('\n').slice(after.blockEnd),
-    source.split('\n').slice(before.blockEnd),
+    sourceCrlf.split('\n').slice(before.blockEnd),
     'prefix 块之后的内容应逐字不变（含块尾空行与注释）',
   );
-  assert.ok(source.split('\n').slice(before.blockEnd).some((l) => l.trim() === ''), '样本应确实包含块尾空行，否则该断言无意义');
+  assert.ok(sourceCrlf.split('\n').slice(before.blockEnd).some((l) => l.trim() === ''), '样本应确实包含块尾空行，否则该断言无意义');
 });
 
 test('只含空格/Tab 的行也能安全往返（不会被当成空行读丢）', () => {
+  // 样本必须是**完整**原文再加空白行：presetPromptBlockers 要求安全不变量齐全，
+  // 而现在的角色卡前 3 行只有 70 字符（旧版前 3 行含整段安全规则），按位置切片
+  // 会把「正文过短」误判成写回失败。空白行放在末尾，覆盖「只有空格/Tab 的行」。
   const spaced = [
-    ...originalPrefix.split('\n').slice(0, 3),
+    ...originalPrefix.split('\n'),
     '   ',
     '\t',
     ' 带前后空格的正文 ',
     '正常一行',
   ].join('\n');
-  // 前 3 行来自原文，因此安全不变量仍然齐全
   const next = renderPresetPromptYaml(source, spaced);
   assert.equal(extractPresetPrefix(next), spaced, '空白行必须原样保留');
 });

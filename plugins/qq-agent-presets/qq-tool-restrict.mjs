@@ -108,8 +108,8 @@ const LOCAL_EXECUTION_TOOLS = [
   'workflow', 'ralph',
   // 插件/cordis 运行期检查：能读宿主状态（0.1.7 起只有这两个名字）
   'cordis_inspect_list', 'cordis_inspect_query',
-  // 本机文件 + 进程：plugin-guard 会改写配置并 spawn pnpm
-  'dsh_snapshot', 'dsh_rollback', 'incident_resolved',
+  // 本机文件 + 进程：plugin-guard 会改写配置并 spawn pnpm。
+  // 注意：这三个名字**只在那套插件装了之后才存在**，见下面的 OPTIONAL_PLUGIN_TOOL_NAMES。
   // 会话/交付/任务面
   // 注意：`todo_write` 与 `ask_user_question` **故意不在**此名单——它们是下面
   // SAFE_EXACT 允许的无害模型侧工具，两边不能自相矛盾。
@@ -128,6 +128,14 @@ const LOCAL_EXECUTION_TOOLS = [
   // 已装但当前未进 bundles 的插件（一旦加回就是新口子）
   'dev_mode_set', 'dev_mode_status', 'dev_mode_subagent',
 ]
+
+// 这些工具名属于**可选插件**（dsh-plugin-guard 之类），不一定装在每个 profile 里。
+// 装了就限制，没装时 `tools.restrict()` 会对未知名字抛错 —— apply 里逐个 try/catch
+// 会跳过（不是静默失效，因为执行期 guard 仍然兜底）。测试据此把它们从「必须能在
+// 当前安装里找到」的对账中排除，避免换个 profile 就误报「拼错假名」。
+export const OPTIONAL_PLUGIN_TOOL_NAMES = Object.freeze([
+  'dsh_snapshot', 'dsh_rollback', 'incident_resolved',
+])
 
 const KNOWN_DANGEROUS_GLOBAL_TOOLS = [
   // 本地执行面（见上）
@@ -156,7 +164,7 @@ const KNOWN_DANGEROUS_GLOBAL_TOOLS = [
 ]
 
 // 供 test-preset-local-tools.mjs 导入并与 DSH 真实工具名对账，避免两份名单漂移。
-export const RESTRICTED_TOOL_NAMES = Object.freeze([...KNOWN_DANGEROUS_GLOBAL_TOOLS])
+export const RESTRICTED_TOOL_NAMES = Object.freeze([...KNOWN_DANGEROUS_GLOBAL_TOOLS, ...OPTIONAL_PLUGIN_TOOL_NAMES])
 
 // 执行期白名单：不在这些范围内的工具一律拒绝。
 // 前缀覆盖 DSH MCP client 暴露的命名空间工具。
@@ -184,7 +192,9 @@ export function apply(ctx) {
   // 是**各 preset 行自己注册的 scoped 工具**，在 QQ preset 里根本没挂载，
   // 因此本名单主要防的是"别的 composition 把它们注册进全局层"这种回归，
   // 以及 MCP 之外的宿主工具（plugin-guard / cordis 检查工具等）。
-  for (const name of KNOWN_DANGEROUS_GLOBAL_TOOLS) {
+  // 遍历 RESTRICTED_TOOL_NAMES（= 已知危险 + 可选插件工具），保证可选名单里的名字
+  // 在装了对应插件时也会被 restrict；没装时 try/catch 跳过。
+  for (const name of RESTRICTED_TOOL_NAMES) {
     try {
       ctx.tools.restrict({ deny: [name] })
     } catch (error) {

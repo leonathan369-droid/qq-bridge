@@ -208,8 +208,18 @@ test('守卫名单里的每个名字都是 DSH 真实注册的工具（防拼错
   for (const id of SIMULATION_PRESETS) {
     const { dir } = readPreset(id);
     const mod = await import(pathToFileURL(path.join(dir, 'qq-tool-restrict.mjs')).href);
+    // 可选插件提供的名字（dsh-plugin-guard 的 dsh_snapshot / dsh_rollback /
+    // incident_resolved）在没装那套插件的 profile 里本来就不存在：它们仍在 restrict
+    // 名单里（装了就有用），但**不能**算「拼错假名」。名单里的每个可选名字都必须
+    // 被守卫显式声明为 OPTIONAL_PLUGIN_TOOL_NAMES —— 不能靠「不在 DSH 里」蒙混。
+    const optional = new Set(mod.OPTIONAL_PLUGIN_TOOL_NAMES ?? []);
+    assert.ok(optional.size > 0, `${id}: 守卫应导出 OPTIONAL_PLUGIN_TOOL_NAMES（可选插件提供的工具名）`);
+    for (const name of optional) {
+      assert.ok(mod.RESTRICTED_TOOL_NAMES.includes(name),
+        `${id}: 可选名字 ${name} 仍必须留在 RESTRICTED_TOOL_NAMES 里（装了插件就该被限制）`);
+    }
     const fabricated = mod.RESTRICTED_TOOL_NAMES
-      .filter((n) => !DEV_TOOL_PREFIX.test(n) && !dshNames.has(n));
+      .filter((n) => !DEV_TOOL_PREFIX.test(n) && !dshNames.has(n) && !optional.has(n));
     assert.deepEqual(fabricated, [],
       `${id}: 以下名字在 DSH 已安装的工具包里找不到 ⇒ restrict 会抛错并被吞掉，`
       + `限制静默失效：${fabricated.join(', ')}`);

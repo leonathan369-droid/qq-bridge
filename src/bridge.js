@@ -6169,6 +6169,21 @@ async function main() {
           // 于是「发完一条 → 紧接着调等待」这几秒里对方到达的消息不算到达，等待会白睡满
           // timeout（实测私聊空转 60/60/120 秒，回复从 ~15 秒拖到 87~110 秒）。
           // 未读缓冲里本来就有待处理消息时，正确的语义是「现在就有事可做」，直接交回消息。
+          // 等待期间的授权/身份复核：快路径和慢路径**必须**共用同一份判据。
+          //
+          // 历史缺陷（2026-10-21 回归修）：快路径曾经在复核之前直接 200 + noteModelMessagesV2
+          // 写观察回执，于是「等待期间会话被替换 / 模式切换 / 暂停 / 工具关 / 白名单变更」这几种
+          // 情况下依然返回成功，并且把回执写进了可能已经作废的会话状态。
+          // 快路径的语义只是「不等 timeout」，不是「跳过授权」。
+          const waitStillAuthorized = () => {
+            if (socialV2.conversations.get(canonicalV2Key(key)) !== st) return false;
+            if (!req.headers['x-agent-token']) return true;
+            if (currentMode !== 'reserved2' || socialV2.paused || cfg.socialV2?.enabled === false) return false;
+            if (!agentTokenOk(key, req.headers['x-agent-token'])) return false;
+            if (!v2SessionAllowed(key)) return false;
+            if (!v2ToolEnabled('waitMessages')) return false;
+            return true;
+          };
           const preSleepGateMs = Math.max(0, Number(cfg.socialV2?.wake?.preSleepWaitMs) || 300000);
           if (!replyWait && timeoutMs < preSleepGateMs && v2ToolEnabled('getUnread')) {
             const seenThrough = readThroughSeqV2(st);
@@ -6180,6 +6195,11 @@ async function main() {
               const preSleepRemainingNow = preSleepWaitBlockedV2(st)
                 ? Math.max(0, preSleepMsNow - ((st.lastIncomingAt || 0) ? Date.now() - st.lastIncomingAt : 0))
                 : 0;
+              if (!waitStillAuthorized()) {
+                finishWait();
+                sendJson({ ok: false, error: '等待期间会话已重置或权限已变化，请重新读取会话' }, 403);
+                return;
+              }
               const lastUnseen = unseenNow[unseenNow.length - 1];
               const throughNow = noteModelMessagesV2(st, unseenNow);
               saveSocialV2State();
@@ -6259,9 +6279,7 @@ async function main() {
             await sleep(300);
           }
           const waitedMs = Date.now() - start;
-          if (socialV2.conversations.get(canonicalV2Key(key)) !== st ||
-              (req.headers['x-agent-token'] && (currentMode !== 'reserved2' || socialV2.paused || cfg.socialV2?.enabled === false
-                || !agentTokenOk(key, req.headers['x-agent-token']) || !v2SessionAllowed(key) || !v2ToolEnabled('waitMessages')))) {
+          if (!waitStillAuthorized()) {
             finishWait();
             sendJson({ ok: false, error: '等待期间会话已重置或权限已变化，请重新读取会话' }, 403);
             return;
