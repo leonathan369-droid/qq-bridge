@@ -12,7 +12,7 @@
 | 包 / 插件名 | 仓库 `qq-bridge`；DSH 插件 `qq-bridge-panel` / `qq-agent-presets` / `qq-mode-console` |
 | 版本 | `0.3.0`（前序 `0.2.0-r3`） |
 | 定位 | **第三方社区集成**，不是 DeepSeek 官方发布。页面标题与 README 都必须写清这一点，不得使用官方 logo/名义。 |
-| 许可 | MIT（仓库根 `LICENSE`，含「数据出机清单」） |
+| 许可 | MIT（仓库根 `LICENSE`；第三方组件与「数据出机清单」在 `NOTICE.md`） |
 | 目标平台 | macOS Apple Silicon 为主要验证平台；代码本身跨平台（Windows 的 `.bat` 与 `chcp` 逻辑仍在，Linux 未实测） |
 
 ## 2. 兼容性声明

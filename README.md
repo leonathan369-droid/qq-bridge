@@ -9,7 +9,7 @@
 
 > 🗂️ 文档索引（全部文档一句话说明 + 是否仍然有效）见 **[docs/README.md](docs/README.md)**；仓库目录/脚本命名约定见 **[docs/FOLDER_MAP.md](docs/FOLDER_MAP.md)**。
 >
-> 🔒 QQ 会话的权限边界与安全承诺见 **[RULES.md](RULES.md)**。
+> 🔒 QQ 会话的权限边界与安全承诺见 **[RULES.md](RULES.md)**；第三方组件与数据出机清单见 **[NOTICE.md](NOTICE.md)**。
 >
 > 🎤 独立的「发语音」工具已拆到仓库上一级的 **`../voice-tool/`**（命令行 `voice-cli.mjs` / 图形界面 `voice-gui.mjs`），不再依赖 qq-bridge 运行。
 
@@ -85,10 +85,10 @@ QQ 消息 ──► SnowLuma（OneBot v11 WS）──► 本桥接进程 ──�
     ⚠️ **v0.1.5 起移除了 `start_snowluma` / `stop_snowluma`**（以及 `snowluma.allowProcessControl` 配置项）——
     原因是 **SnowLuma EULA §5.4** 规定「将其并入第三方安装包或 Docker 镜像、**通过自动化脚本部署**」
     须事先取得书面授权，而原生组件属专有组件。本程序**只探测、不部署**：SnowLuma 的安装、启动与扫码
-    始终由你自己完成（详见 [LICENSE](LICENSE) 与 [RULES.md](RULES.md)）。
+    始终由你自己完成（详见 [LICENSE](LICENSE)、[NOTICE.md](NOTICE.md) 与 [RULES.md](RULES.md)）。
   - `web-search-safe`（桥接自带 `src/mcp-web-search-safe.js`）：只读 `web_search` / `web_fetch`（带 SSRF 防护），供 agent 查网络用语/资料。
     ⚠️ 它会把**搜索关键词发给 Bing**、并按模型决定抓取公网 URL；**黑话学习默认开启**，会拿群聊里提取的词条去搜。
-    数据出机清单见 [LICENSE](LICENSE) 的「数据出机清单」，不需要就关掉黑话自动研究（`slang.autoResearch`）。
+    数据出机清单见 [NOTICE.md](NOTICE.md) 的「数据出机清单」，不需要就关掉黑话自动研究（`slang.autoResearch`）。
 - **会话模型**：每个 QQ 会话（私聊/群）对应一个独立的 DSH 会话，统一归组到「QQ 聊天」工作区（不再散落未分组）；映射持久化在 `state/sessions.json`
 - **性格定制**：QQ 会话默认使用 `qq-chat` agent preset，`reserved2` 使用 `qq-chat-v2`。DSH 0.1.7 起 preset 不再是 `~/.dsh/.agent-presets/<名>/` 目录，而是 `plugins/qq-agent-presets/` bundle 生成并插入 profile 的一条 `@deepseek-ai/dsh-agent-preset` 行（重启 DSH 后生效）；人格与默认 DSH 一致（coding agent），仅附加 QQ 场景规则；**角色扮演**是可选机制——由控制台或管理端设置 `state/current-role.json` 注入（群友无法更改）
 - **本地控制台**：桥接自带 Web 控制台 `http://127.0.0.1:3100`——左侧按操作任务分为「运行总览 / 会话与审批 / 人格与角色 / 二代仿真 / 一代仿真 / 黑话词库 / 令牌与花费 / 访问与安全 / 调试与运维 / 工具参考」十个页面，右上角搜索框可跨页定位任意功能项；支持**浅色 / 深色双主题**（顶栏一键切换，未选择时跟随系统）；切换运行模式（chat / closed-agent / reserved / reserved2）、设置角色、静默开关、查看活动日志、修改管理员/控制台令牌，全部即时生效；访问需要令牌（`config.json` 的 `consoleToken`，未配置时自动生成并打印在启动日志；控制台内可手动修改或重新生成）；装进 DSH 后，**设置 → QQ 桥接** 是完整的本地控制中心（`plugins/qq-bridge-panel`）：四项**真实健康检查**（桥接 / LLBot / QQ 登录 / DSH 连接，不拿端口监听当健康）、**一键启动**（幂等、超时明确、等待扫码不算失败）、服务管理（只停止面板能验证归属的进程）、**运行模式**（chat / reserved / reserved2，closed-agent 收在高级项并提示权限风险）、**QQ 专用模型与推理强度**（读 DSH 真实模型目录，档位随模型能力变化；**只作用于 QQ 会话，不改 DSH 全局默认模型**）、以及可折叠的路径/端口/日志/最近错误诊断。打开控制台走 **60 秒一次性票据**（长期 `consoleToken` 不再进浏览器地址栏）；对应端口未监听或身份无法确认时「打开」按钮保持禁用并说明原因。详见 [docs/guides/QQ_PANEL.md](docs/guides/QQ_PANEL.md)
