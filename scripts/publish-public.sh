@@ -119,7 +119,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
-echo "==> force-push 到 $DEST（main）"
+echo "==> force-push 到 ${DEST}（main）"
 git remote add origin "$DEST"
 git push --force origin HEAD:main
 echo "==> 完成"
