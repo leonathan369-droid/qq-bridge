@@ -80,6 +80,27 @@ node scripts/setup-dsh.mjs && # 重启 DSH
 > 不要用 `git reset --hard` / `git checkout -- .`：工作区可能还有其它未提交成果。
 > 桥接侧的新接口对旧面板**向前兼容**（旧面板继续用 `?token=` 打开），所以只回滚面板是安全的。
 
+## 5.4 维护者：发布 / 更新公开仓库
+
+公开仓库：**https://github.com/leonathan369-droid/qq-bridge**（public，MIT，派生自 Derpyu520/qq-bridge）。
+
+因为公开历史必须是「不含个人路径 / 个人邮箱」的干净版本，本地私有历史不能直接 push。
+仓库提供 `scripts/publish-public.sh`：它在临时克隆里重写历史（文件内容、提交信息、提交身份），
+自检无个人字符串后 force-push。用法：
+
+```bash
+PUB_DEST=git@github.com:leonathan369-droid/qq-bridge.git \
+PUB_NAME=leonathan369-droid \
+PUB_EMAIL=leonathan369-droid@users.noreply.github.com \
+PUB_QQ=<你的QQ号> \
+./scripts/publish-public.sh            # 加 PUB_DRY_RUN=1 可只重写+自检，不 push
+```
+
+注意：
+- 这是 **force-push**（公开仓库的历史每次都会重建）；不要在上面直接开 PR 合并，改动请回到本地仓库。
+- 发布前请先跑 `npm run test:audit`、`npm run privacy-scan`，并确认 `git status` 干净。
+- 公开仓库的 release/tag 也应在重写后的历史上打；本地历史与公开历史不同源是**预期**的。
+
 ## 5.5 生成物与隐私（发布前必须确认）
 
 | 项 | 规则 |
