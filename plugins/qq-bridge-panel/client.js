@@ -847,9 +847,37 @@ window.__ModuleLoader__.load({
               'div',
               { 'data-qbp-meta': '' },
               llbot.startable
-                ? `代管启动命令：${panel.llbotLaunch?.display || ''}${panel.llbotLaunch?.source === 'derived' ? '（由 launcherPath + panel.llbotQq 派生）' : ''}`
-                : `LLBot 是第三方程序，默认由你自己启动。要面板代管：${panel.llbotLaunch?.reason || '在 config.json 配置 panel.llbotCommand'}`,
+                ? `代管启动命令：${panel.llbotLaunch?.display || ''}${
+                    panel.llbotLaunch?.source === 'derived'
+                      ? `（由 launcherPath 派生${panel.llbotLaunch?.qqSource ? ` · QQ 号来源：${panel.llbotLaunch.qqSource}` : ''}）`
+                      : '（来自 config.json 的 panel.llbotCommand）'
+                  }`
+                : `LLBot 是第三方程序，默认由你自己启动。要让面板代管启停：${panel.llbotLaunch?.reason || '在 config.json 里配置 panel.llbotCommand 或 panel.llbotQq'}`,
             ),
+            !llbot.startable
+              ? h(
+                  'div',
+                  { 'data-qbp-row': '' },
+                  h('span', { 'data-qbp-meta': '' }, '配置示例：'),
+                  h('code', { 'data-qbp-code': '' }, '{"panel":{"llbotQq":"<你的QQ号>"}}'),
+                  h(Btn, {
+                    label: '复制',
+                    title: '复制到剪贴板，粘贴进桥接的 config.json',
+                    onClick: async () => {
+                      const text = '{"panel":{"llbotQq":"<你的QQ号>"}}'
+                      try {
+                        await navigator.clipboard.writeText(text)
+                        setMessage({ kind: 'ok', text: '已复制。把它合并进桥接的 config.json（snowluma.launcherPath 需指向 llbot.js），保存后点「刷新状态」。' })
+                      } catch {
+                        setMessage({ kind: 'warn', text: `复制失败（浏览器拒绝了剪贴板权限）。请手动添加：${text}` })
+                      }
+                    },
+                  }),
+                )
+              : null,
+            !llbot.startable
+              ? h('div', { 'data-qbp-meta': '' }, '也可以在 config.json 里给出完整命令数组 panel.llbotCommand（不接受字符串/shell），或用 snowluma.launcherPath + panel.llbotQq 让面板派生 [node, llbot.js, --qq, <QQ号>]。')
+              : null,
           ),
         ),
 

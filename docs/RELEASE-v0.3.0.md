@@ -34,8 +34,12 @@ node scripts/setup-dsh.mjs [profile]        # 注册三个 bundle（含 qq-bridg
 # 重启 DSH；设置 → QQ 桥接
 ```
 
-- `panel.llbotCommand`（数组）或 `snowluma.launcherPath` + `panel.llbotQq` 才能让面板代管 LLBot 启停；
-  不填则面板只探测与打开 WebUI（这是默认、也是推荐的安全姿态）。
+- **不依赖任何外部启动台**：面板自己就能启动/停止桥接与 LLBot。
+  · 桥接：面板用绝对路径 detached 启动，登记 pid + 命令行指纹 + 端口，随时可停；
+  · LLBot：需要一次性配置「怎么启动它」——`panel.llbotCommand`（固定命令数组）、
+    或 `snowluma.launcherPath` + `panel.llbotQq`、或只给 `launcherPath` 让面板从
+    LLBot `data/config_<QQ>.json` 自动识别账号（仅单账号时；多账号要求显式指定）。
+  · 不配置时面板只探测与打开 WebUI，**不会**杀你自己启动的 LLBot（安全设计）。
 - `dsh.modelScope` 默认 `session`（推荐）。**不要**在没有明确理由时改 `global`。
 
 ## 4. 升级与迁移（0.2.0-r3 → 0.3.0）

@@ -25,7 +25,7 @@
  *   · 只停止**自己启动并仍能验证归属**的进程；外部实例返回 code:'external'。
  */
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { connect } from 'node:net'
 import { spawn, execFileSync } from 'node:child_process'
@@ -200,12 +200,49 @@ export function llbotLaunchPlanOf(config, { repoDir, nodePath } = {}) {
       source: 'config',
       reason: '',
       display: configured.join(' '),
+      qq: '',
+      qqSource: 'panel.llbotCommand',
     }
   }
   const launcher = String(config?.snowluma?.launcherPath ?? '').trim()
-  const qq = String(config?.panel?.llbotQq ?? '').trim()
+  let qq = String(config?.panel?.llbotQq ?? '').trim()
+  let qqSource = qq ? 'panel.llbotQq' : ''
   if (!launcher || !existsSync(launcher)) {
-    return { available: false, command: [], cwd: '', source: '', reason: '未配置 panel.llbotCommand，且 snowluma.launcherPath 不存在', display: '' }
+    return { available: false, command: [], cwd: '', source: '', reason: '未配置 panel.llbotCommand，且 snowluma.launcherPath 不存在', display: '', qq: '', qqSource: '' }
+  }
+  // 公开发布场景：用户不一定愿意手工填 QQ 号。LLBot 首次登录成功后会在自己的 data 目录
+  // 写 `config_<QQ>.json`，所以只要那里**恰好只有一个**账号，就据此推导启动参数。
+  // 多个账号时**不猜**（宁可让用户显式配置，也不要在错误账号上启动）。
+  if (!qq) {
+    const candidateDirs = []
+    const homeDir = String(config?.snowluma?.homeDir ?? '').trim()
+    if (homeDir) candidateDirs.push(homeDir)
+    const sibling = join(dirname(launcher), 'data')
+    if (!candidateDirs.includes(sibling)) candidateDirs.push(sibling)
+    for (const dir of candidateDirs) {
+      try {
+        const qqs = [...new Set(readdirSync(dir)
+          .map((name) => /^config_(\d{5,12})\.json$/.exec(name)?.[1])
+          .filter(Boolean))]
+        if (qqs.length === 1) {
+          qq = qqs[0]
+          qqSource = `LLBot 数据目录 ${dir} 的 config_${qq}.json`
+          break
+        }
+        if (qqs.length > 1) {
+          return {
+            available: false,
+            command: [],
+            cwd: dirname(launcher),
+            source: '',
+            reason: `LLBot 数据目录 ${dir} 里有多个账号（${qqs.join(' / ')}），请显式设置 panel.llbotQq`,
+            display: '',
+            qq: '',
+            qqSource: '',
+          }
+        }
+      } catch {}
+    }
   }
   if (!/^\d{5,12}$/.test(qq)) {
     return {
@@ -218,10 +255,10 @@ export function llbotLaunchPlanOf(config, { repoDir, nodePath } = {}) {
     }
   }
   if (!nodePath) {
-    return { available: false, command: [], cwd: dirname(launcher), source: '', reason: '找不到 node，无法派生 LLBot 启动命令', display: '' }
+    return { available: false, command: [], cwd: dirname(launcher), source: '', reason: '找不到 node，无法派生 LLBot 启动命令', display: '', qq, qqSource }
   }
   const command = [nodePath, launcher, '--qq', qq]
-  return { available: true, command, cwd: dirname(launcher), source: 'derived', reason: '', display: command.join(' ') }
+  return { available: true, command, cwd: dirname(launcher), source: 'derived', reason: '', display: command.join(' '), qq, qqSource }
 }
 
 // ── 网络探测 ────────────────────────────────────────────────────────────────
@@ -857,7 +894,7 @@ export function createServiceManager({
         client: { seen: lastClientPing > 0, at: lastClientPing > 0 ? new Date(lastClientPing).toISOString() : '' },
         llbotLaunch: (() => {
           const plan = llbotLaunchPlanOf(config.config, { repoDir, nodePath })
-          return { available: plan.available, source: plan.source, reason: plan.reason, display: plan.display, cwd: plan.cwd }
+          return { available: plan.available, source: plan.source, reason: plan.reason, display: plan.display, cwd: plan.cwd, qq: plan.qq ?? '', qqSource: plan.qqSource ?? '' }
         })(),
       },
       aggregate,

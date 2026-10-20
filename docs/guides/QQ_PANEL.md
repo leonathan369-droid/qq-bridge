@@ -133,6 +133,46 @@ RPC 参数里没有 `remember/persist/scope` 之类的开关，调用方关不�
 - 切换模型时：旧档位被新模型支持就保留，否则改用新模型的 `defaultEffort`；没有则记 `auto`
   （= 不传 `reasoningEffort`，交给适配器默认），**绝不把不兼容档位静默提交**
 
+## 7.5 没有外部启动台时（公开发布场景）
+
+面板**不依赖**任何外部启动台。默认情况下它就是这两个服务的唯一管理者：
+
+| 服务 | 面板能否自己启停 | 条件 |
+| --- | --- | --- |
+| QQ Bridge | ✅ 总是可以 | 面板用 `node <repo>/src/bridge.js`（绝对路径）detached 启动，登记 pid + 命令行指纹 + 端口 |
+| LLBot | ✅ 需要一次性配置 | 见下面三种方式；不配置时面板只探测/打开 WebUI，不代管 |
+
+LLBot 代管启动的三种配置方式（`config.json`，任选其一）：
+
+```jsonc
+// 方式 1：完整固定命令数组（最明确，推荐给发行版安装器）
+"panel": { "llbotCommand": ["/path/to/node", "/path/to/llbot.js", "--qq", "123456789"], "llbotCwd": "/path/to/llbot" }
+
+// 方式 2：只给 QQ 号，配合 snowluma.launcherPath 派生 [node, llbot.js, --qq, <QQ>]
+"panel": { "llbotQq": "123456789" },
+"snowluma": { "launcherPath": "/path/to/llbot.js" }
+
+// 方式 3：什么都不填，面板从 LLBot 的 data 目录自动识别
+//   首次登录成功后 LLBot 会写 data/config_<QQ>.json；**恰好只有一个账号**时面板据此派生，
+//   多账号时会拒绝自动推导并要求显式设置 panel.llbotQq（不在错误账号上启动）。
+```
+
+「面板托管」与「外部进程」的区别（这是安全设计，不是缺陷）：
+
+- 面板启动 → `owned=true` → 启动/停止/重启按钮全部可用；停止走 pid + 命令行指纹 + 端口三重校验。
+- 你自己在终端/启动台/LLBot 自带界面启动 → `owned=false`（显示「外部启动」）→ 停止/重启按钮**禁用**，
+  面板绝不会杀不是自己启动的进程。要停就回你启动它的地方停。
+- 面板**不会**在 DSH 启动时自动拉起任何服务；只有点「启动服务」才会。DSH 退出时面板也**不杀**托管服务
+  （服务独立存活，下次打开面板凭 `state/panel-services.json` 重新接管）；日志在 `state/panel-logs/<service>.log`。
+
+真机生命周期验收（无启动台，仅面板）：
+
+```
+start-all → llbot:done(owned,pid) bridge:done(owned,pid) qq:waiting dsh:done
+stop llbot / stop bridge → 两个端口 3080/3101 全部 closed
+残留进程：无 · state/panel-services.json：{} · bridge 日志：[exit] code=0
+```
+
 ## 8. 安全边界
 
 | 面 | 措施 |

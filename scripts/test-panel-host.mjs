@@ -605,6 +605,39 @@ try {
     assert.equal(stopped.ok, true, stopped.message)
   })
 
+  await check('LLBot 代管启动：只给 launcherPath 时从 data/config_<QQ>.json 自动推导账号', async () => {
+    const llbotScript = path.join(repoDir, 'llbot-auto', 'llbot.js')
+    const dataDir = path.join(repoDir, 'llbot-auto', 'data')
+    await mkdir(dataDir, { recursive: true })
+    await writeFile(llbotScript, dummyLlbotSource(), 'utf8')
+    await writeFile(path.join(dataDir, 'config_123456789.json'), '{}', 'utf8')
+    const plan = llbotLaunchPlanOf(
+      { snowluma: { launcherPath: llbotScript }, panel: {} },
+      { repoDir, nodePath: process.execPath },
+    )
+    assert.equal(plan.available, true, plan.reason)
+    assert.equal(plan.source, 'derived')
+    assert.equal(plan.qq, '123456789')
+    assert.match(plan.qqSource, /config_123456789\.json/)
+    assert.deepEqual(plan.command.slice(-2), ['--qq', '123456789'])
+  })
+
+  await check('LLBot 多账号时不猜：要求显式 panel.llbotQq', async () => {
+    const llbotScript = path.join(repoDir, 'llbot-multi', 'llbot.js')
+    const dataDir = path.join(repoDir, 'llbot-multi', 'data')
+    await mkdir(dataDir, { recursive: true })
+    await writeFile(llbotScript, dummyLlbotSource(), 'utf8')
+    await writeFile(path.join(dataDir, 'config_111111111.json'), '{}', 'utf8')
+    await writeFile(path.join(dataDir, 'config_222222222.json'), '{}', 'utf8')
+    const plan = llbotLaunchPlanOf(
+      { snowluma: { launcherPath: llbotScript }, panel: {} },
+      { repoDir, nodePath: process.execPath },
+    )
+    assert.equal(plan.available, false, '多账号时必须拒绝自动推导')
+    assert.match(plan.reason, /多个账号/)
+    assert.match(plan.reason, /panel\.llbotQq/)
+  })
+
   await check('安全：非回环 URL 一律拒绝打开/探测', async () => {
     assert.throws(() => assertLoopbackUrl('http://evil.com/'), /回环/)
     assert.throws(() => assertLoopbackUrl('file:///etc/passwd'), /http/)
