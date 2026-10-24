@@ -9,7 +9,7 @@
 | 区块 | 内容 |
 | --- | --- |
 | A 标题 | `QQ Bridge for macOS` · `DeepSeek Harness · 本地 QQ Agent` · 面板版本 · 综合状态胶囊 |
-| B 系统状态 | 四项独立健康检查：QQ Bridge / LLBot / QQ 登录 / DSH 连接。综合状态区分 **全部就绪 / 部分就绪 / 等待 QQ 登录 / 服务异常 / 全部停止** |
+| B 系统状态 | 五项独立健康检查：QQ Bridge / LLBot / QQ 登录 / DSH 连接 / **消息链路**（桥接 ↔ LLBot 的 OneBot WS）。综合状态区分 **全部就绪 / 部分就绪 / 等待 QQ 登录 / 收发链路中断 / 服务异常 / 全部停止** |
 | C 主操作 | **启动服务**（一键启动编排）· **打开控制台**（桥接健康时才可点） |
 | D 服务管理 | 两个服务行：端口、归属（面板/外部）、启动/停止/重启（按归属提供）、打开控制台 / WebUI |
 | E 运行模式 | chat / reserved / reserved2；`closed-agent` 在「高级」里并提示权限风险；显示**真实生效值**与来源 |
@@ -24,6 +24,7 @@
 | QQ Bridge | 控制台 `GET /api/status`（带 `x-console-token`）返回 JSON 且含 `mode` | 端口被别的程序占着 / 返回 HTML |
 | LLBot | WebUI `GET /api/login-info`（`X-Webui-Token = sha256(密码)`）可解析 | 只有 TCP 端口监听 |
 | QQ 登录 | `login-info.data.online === true && uin` 非空；桥接在线时也参考 `snowluma.accountOnline` | "LLBot WebUI 能打开" ≠ 已登录 |
+| 消息链路 | 桥接 `/api/status.snowluma.connected === true`（**真实 OneBot WS 连接状态**） | 桥接端口通、`get_status` 通、QQ 已登录 —— 这些都成立也可能收不到消息 |
 | DSH 连接 | 桥接 `/api/status.dshReady`（桥接→DSH 的 RPC 通道）；桥接离线时只报"DSH 在监听"而**不**宣称已连接 | 端口 19387 开着 |
 
 综合状态规则（`panel-core.js`）：
@@ -31,8 +32,17 @@
 - **全部停止**：两个服务都没在跑
 - **服务异常**：任一在跑的服务健康检查为 `degraded/unknown`（例如桥接在跑但上游接收链路异常）
 - **等待 QQ 登录**：LLBot 在跑、`online=false` → 显示「等待扫码」并开放「打开 LLBot WebUI」，**不判为启动失败**
+- **收发链路中断**：服务都在跑、QQ 也登录了，但 `snowluma.connected === false` —— 桥接没连上
+  LLBot 的 OneBot WS，消息收发**全废**。面板顶部变成「收发链路中断」并出现「重启桥接」按钮。
+  这一条是 **v0.3.1 才有的**：`v0.3.0` 只按端口/HTTP 判断，这种形态会被误报成「全部就绪」
+  （见 [RELEASE-v0.3.1](../RELEASE-v0.3.1.md)）。
 - **部分就绪**：服务都正常但 DSH 连接未就绪
-- **全部就绪**：四项都正常
+- **全部就绪**：五项都正常
+
+> ⚠️ 「桥接 ↔ LLBot」这一跳**必须单独看**。桥接的 `/api/status` 里 `snowluma.good` 是走 LLBot 的
+> **HTTP** `get_status` 得来的，WS 断了它照样是 `true`。判「能不能收发」只能看 `connected`
+> （由真实 WS 的 open/close 事件写入）。
+
 
 ## 3. 一键启动（幂等）
 
@@ -208,3 +218,13 @@ node scripts/setup-dsh.mjs                # 注册三个 bundle（含 qq-bridge-
 - **模型菜单打不开 / 显示目录不可用**：DSH 没有可路由模型（Provider 凭据缺失）；`failures` 会列出原因。
 - **改了模型，普通会话的默认模型变了吗**：不会（`dsh.modelScope=session`）。可在 DSH 设置里查看默认模型确认；
   若你显式设成 `global`，面板会用醒目文字提示该副作用。
+- **QQ 已登录、发消息却没回复**：先看「系统状态」里的**消息链路**是否「已连通」。
+  - 「中断」＝ 桥接在跑但没连上 LLBot 的 OneBot WebSocket，QQ 消息进不来、回复也发不出。
+    `v0.3.1` 起桥接会自动重连（每 8s 强制重建一次，直到连上），通常 8 秒内自己恢复；
+    面板顶部会出现「收发链路中断」和一键「重启桥接」。
+  - 「未知」＝ 桥接没上报这个字段（旧版桥接）。请升级到 `v0.3.1`。
+  - 都会显示「已连通」还是没回复，再看 [README §SnowLuma 版本与上游健康](../../README.md#snowluma-版本与上游健康连上了但收不到消息)
+    里的 `good` / `[Hook]` 判定（那是 QQ → SnowLuma 的原生接收链路退化了）。
+- **启动顺序有讲究吗**：`v0.3.1` 起没有。以前「先启桥接、后扫码登录」会让桥接的 WS 永久失去重连能力
+  （Node 22 内置 WebSocket 连接失败只发 `error` 不发 `close`，SDK 的 `connectPromise` 卡死），
+  现在由常驻看门狗兜住；但**先登录再启动**仍然是少等 8 秒的更省事路径。

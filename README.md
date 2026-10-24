@@ -15,7 +15,7 @@
 
 把 QQ 消息接入 DSH agent：QQ 好友/群发来的消息会变成 DSH 会话里的用户消息，agent 的回复（含提问、工具审批）会发回 QQ。
 
-> ⚠️ **当前版本 `v0.3.0`，适配 DSH 0.2.0-rc.2**（在该版本上逐项实测：`npm run verify:adaptation`）。
+> ⚠️ **当前版本 `v0.3.1`，适配 DSH 0.2.0-rc.2**（在该版本上逐项实测：`npm run verify:adaptation`）。
 > 鉴权用 `~/.dsh` 里持久化的浏览器会话签名密钥**离线铸造 Cookie** —— DSH 0.1.7 起进程启动 token
 > 只存在于内存、不再落盘，旧版「从 guard 日志里读 token」的方式已失效。agent preset 是 DSH 0.1.7 起的
 > `@deepseek-ai/dsh-agent-preset` Cordis 行（`~/.dsh/.agent-presets/` 目录机制已废）。协议代次
@@ -40,6 +40,17 @@
 > 全局默认模型）、一次性票据打开控制台、可折叠诊断。回归 **32/32**；作用域验收脚本
 > `npm run verify:panel-isolation`。详见 [docs/guides/QQ_PANEL.md](docs/guides/QQ_PANEL.md)
 > 与 [docs/RELEASE-v0.3.0.md](docs/RELEASE-v0.3.0.md)。
+>
+> **v0.3.1（2026-10-24）**：修一个「**面板全绿、消息一条进不来**」的隐蔽故障。先启动服务、
+> 再扫码登录 LLBot 时，桥接的 OneBot WebSocket 首次连接会失败，而失败路径上 Node 22 内置
+> WebSocket **只发 `error` 不发 `close`**，@snowluma/sdk 的 `connectPromise` 于是永不 settle、
+> 之后每次 `connect()` 都返回同一个 pending promise → **永久不再重连**（`close` 型的 token
+> 自愈也一并不跑）。用户侧表现：QQ 明明已登录，发消息却完全没反应；旧面板只看端口/HTTP，
+> 四项全绿报「全部就绪」。现在：① 桥接常驻 **WS 连接看门狗**（卡在连接中超过 8s 就强制
+> 重建，连续失败顺带自愈 token）；② 面板把「桥接 ↔ LLBot」单列为**消息链路**，断了显示
+> 「收发链路中断」并给一键「重启桥接」，不再冒充就绪；③ 连接错误日志不再打成 `{}`。
+> 回归 **34/34**（新增 WS 看门狗单测 + 真实进程端到端恢复测试）。详见
+> [docs/RELEASE-v0.3.1.md](docs/RELEASE-v0.3.1.md)。
 >
 > 逐条改动说明见 [docs/guides/DSH_020_ADAPTATION.md](docs/guides/DSH_020_ADAPTATION.md)。
 >

@@ -1,6 +1,6 @@
 {
   "name": "qq-bridge-panel",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "QQ Bridge for macOS —— DSH 设置页里的 QQ 智能体控制中心：真实健康检查、一键启动、运行模式、QQ 专用模型与推理强度、控制台安全打开",
   "keywords": [
     "dsh",

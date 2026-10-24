@@ -33,6 +33,12 @@ const tests = [
   'test-voice-system.mjs',
   // SnowLuma 账号/token 自发现（换 QQ 账号后 token 会变，写死的工具会 401）
   'test-snowluma-conn.mjs',
+  // WS 连接看门狗：连不上时 Node 22 只发 error 不发 close → SDK 的 connectPromise 卡死，
+  // 之后**永久不再重连**（2026-10-24 事故：先启桥接、后扫码登录 → 面板全绿但收发全废）。
+  'test-ws-supervisor.mjs',
+  // 端到端：真实 bridge 进程 + "LLBot 晚到"（先启桥接、后扫码登录的常态顺序）。
+  // 起临时仓库副本、DSH/LLBot 全指向死端口、只做 101 握手的假 OneBot，约 12s。
+  'test-bridge-ws-recovery.mjs',
   // 启动器与编码（乱码根因：.cmd 里的非 ASCII 会被 cmd 按 ANSI 解码）
   'test-encoding.mjs',
   // 控制台乱码机制（UTF-8 字节被按 GBK 解码）+ chcp 修复

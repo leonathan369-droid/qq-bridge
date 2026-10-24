@@ -45,7 +45,7 @@ window.__ModuleLoader__.load({
 [data-qbp-card]{display:flex;flex-direction:column;gap:10px;padding:12px 14px;border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.22));
   border-radius:var(--dsw-radius-lg,12px);background:var(--dsw-alias-bg-module-platform,rgba(128,128,128,.05));}
 [data-qbp-card-plain]{background:transparent;}
-[data-qbp-grid]{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;}
+[data-qbp-grid]{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:8px;}
 @media (max-width:640px){[data-qbp-grid]{grid-template-columns:repeat(2,minmax(0,1fr));}}
 [data-qbp-stat]{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:var(--dsw-radius-md,10px);
   border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.2));min-width:0;}
@@ -87,6 +87,8 @@ window.__ModuleLoader__.load({
 [data-qbp-msg][data-kind="err"]{background:rgba(239,68,68,.12);color:#dc2626;}
 [data-qbp-msg][data-kind="ok"]{background:rgba(34,197,94,.12);color:#16a34a;}
 [data-qbp-msg][data-kind="warn"]{background:rgba(245,158,11,.12);color:#b45309;}
+[data-qbp-msg][data-qbp-msg-row]{display:flex;align-items:center;gap:10px;flex-wrap:wrap;white-space:normal;}
+[data-qbp-msg-text]{flex:1 1 240px;min-width:0;white-space:pre-wrap;}
 [data-qbp-steps]{display:flex;flex-direction:column;gap:4px;margin-top:2px;}
 [data-qbp-step]{display:flex;gap:8px;font-size:11px;line-height:1.5;}
 [data-qbp-step-state]{flex:none;width:38px;font-weight:600;color:var(--dsw-alias-label-tertiary,#8b8f96);}
@@ -598,6 +600,9 @@ window.__ModuleLoader__.load({
       const mode = status.mode ?? {}
       const model = status.model ?? {}
       const panel = status.panel ?? {}
+      // 消息链路（桥接 ↔ LLBot OneBot WS）：与端口/HTTP 健康分开显示，
+      // 「服务全在、面板全绿、消息一条不进」只能靠它暴露（2026-10-24 事故）。
+      const messagePath = status.messagePath ?? {}
       const current = model.current ?? {}
       const info = modelLabelOf(status, current.provider, current.model)
       const catalogLoaded = Boolean(model.catalog)
@@ -616,6 +621,9 @@ window.__ModuleLoader__.load({
         partial: 'partial',
         'waiting-login': 'waiting',
         error: 'error',
+        // 收发链路中断不是"服务异常"：进程都在、QQ 也登录了，是桥接没连上 LLBot。
+        // 单独一种状态，避免用户照着"服务异常"去查一台根本没挂的进程。
+        upstream: 'error',
         stopped: 'unknown',
       }[status.aggregate] ?? 'unknown'
 
@@ -679,8 +687,8 @@ window.__ModuleLoader__.load({
             { 'data-qbp-title': '' },
             'QQ Bridge for macOS',
             h('span', { 'data-qbp-title-badge': '' }, `v${panel.version ?? '?'}`),
-            h('span', { 'data-qbp-pill': '', 'data-tone': aggregateTone, 'data-qbp-row-end': '', title: qq.detail || '' },
-              h(Dot, { state: status.aggregate === 'ready' ? 'ok' : status.aggregate === 'error' ? 'error' : status.aggregate === 'waiting-login' ? 'waiting' : status.aggregate === 'partial' ? 'degraded' : 'down' }),
+            h('span', { 'data-qbp-pill': '', 'data-tone': aggregateTone, 'data-qbp-row-end': '', title: messagePath.detail || qq.detail || '' },
+              h(Dot, { state: status.aggregate === 'ready' ? 'ok' : status.aggregate === 'error' || status.aggregate === 'upstream' ? 'error' : status.aggregate === 'waiting-login' ? 'waiting' : status.aggregate === 'partial' ? 'degraded' : 'down' }),
               status.aggregateText ?? '未知',
             ),
           ),
@@ -689,6 +697,24 @@ window.__ModuleLoader__.load({
 
         !panel.configFound
           ? h('div', { 'data-qbp-msg': '', 'data-kind': 'err' }, `读不到桥接配置：${panel.configFile}${panel.configError ? `（${panel.configError}）` : ''}`)
+          : null,
+
+        // 收发链路中断：必须给"就地修好"的按钮。用户不需要知道是 WS 握手还是 token，
+        // 只需要知道「消息发不出去，点这里」。面板能验证归属时才允许重启（外部实例不动）。
+        messagePath.state === 'degraded'
+          ? h(
+            'div',
+            { 'data-qbp-msg': '', 'data-kind': 'err', 'data-qbp-msg-row': '' },
+            h('span', { 'data-qbp-msg-text': '' }, `收发链路中断：${messagePath.detail || '桥接没连上 LLBot'}。${messagePath.hint || ''}`),
+            h(Btn, {
+              label: busy === '重启桥接' ? '重启中…' : '重启桥接',
+              primary: true,
+              busy: busy === '重启桥接',
+              disabled: busy !== '' || !bridge.running || !bridge.owned,
+              title: !bridge.running ? '桥接未运行' : !bridge.owned ? '外部启动的实例：面板不能重启（请回你的终端/启动台）' : '重启后桥接会重新连 LLBot',
+              onClick: () => act('重启桥接', () => post('/restart', { service: 'bridge' })),
+            }),
+          )
           : null,
 
         // B. 系统状态概览（四项独立真实健康检查）
@@ -725,6 +751,20 @@ window.__ModuleLoader__.load({
               h('div', { 'data-qbp-stat-head': '' }, h(Dot, { state: dsh.state }), 'DSH 连接'),
               h('div', { 'data-qbp-stat-value': '' }, dsh.state === 'ok' ? '已连接' : dsh.state === 'degraded' ? '未就绪' : dsh.state === 'down' ? '不可达' : '未知'),
               h('div', { 'data-qbp-stat-detail': '', title: dsh.detail || '' }, dsh.detail || dsh.baseUrl || '—'),
+            ),
+            // 第五项：消息链路。端口都在监听、QQ 也登录，也不代表消息收得到 ——
+            // 桥接与 LLBot 的 OneBot WS 是独立的一跳，断了就是「面板全绿、收发全废」。
+            h(
+              'div',
+              { 'data-qbp-stat': '' },
+              h('div', { 'data-qbp-stat-head': '' }, h(Dot, { state: messagePath.state || 'unknown' }), '消息链路'),
+              h(
+                'div',
+                { 'data-qbp-stat-value': '' },
+                messagePath.state === 'ok' ? '已连通' : messagePath.state === 'degraded' ? '中断' : '未知',
+              ),
+              h('div', { 'data-qbp-stat-detail': '', title: messagePath.detail || '' },
+                messagePath.detail || '桥接与 LLBot 的 OneBot WebSocket'),
             ),
           ),
         ),

@@ -26,6 +26,7 @@ import { AUDIO_EXTS, cleanupTemp, describeAudio, formatBytes, formatDuration, in
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
+import { createWsSupervisor, describeError } from './ws-supervisor.js';
 import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
 import {
@@ -3290,6 +3291,10 @@ async function main() {
   //      阈值取很宽，措辞必须留余地。
   const SNOWLUMA_STATUS_POLL_MS = 60_000;
   const SNOWLUMA_SILENCE_WARN_MS = Math.max(60_000, Number(cfg.snowluma?.silenceWarnMs) || 10 * 60_000);
+  // WS 连接卡死多久算"重连逻辑已经死了"（见 createWsSupervisor 的说明）。
+  // 取 8s：正常握手在本机是个位数毫秒，LLBot 启动到能握手也只有几百毫秒；
+  // 太短会在正常抖动时误杀，太长会让"先启桥接、后扫码登录"的用户白等。
+  const WS_CONNECT_STALL_MS = 8_000;
   const snowlumaHealth = {
     // 必须显式初始化：早期版本漏了这个键，于是 JSON.stringify 把 `connected: undefined`
     // 直接省略，面板/控制台只能拿到「字段不存在」，无法区分「未连接」与「老版本没上报」。
@@ -11771,7 +11776,9 @@ async function main() {
     // config.json 里存的是前者，WS 需要用自愈发现的那个（详见 bot.connect() 处的说明）。
     void healTokenIfStale(`close code=${info?.code ?? '?'}`);
   });
-  bot.on('error', (error) => log('SnowLuma 错误:', error));
+  // ⚠️ 必须打 message：Error 的 message 是非枚举属性，直接 log(对象) 会打出 `{}`，
+  // 事故现场只剩一行「SnowLuma 错误: {}」，既看不出端口没起、也看不出握手被拒。
+  bot.on('error', (error) => log('SnowLuma 错误:', describeError(error)));
 
   // SnowLuma 尚未就绪时不阻塞桥接启动：SDK 自带后台重连，DSH 侧照常连接。
   bot.connect().catch((error) => {
@@ -11782,8 +11789,28 @@ async function main() {
     // → 重连成功后才是「SnowLuma 已连接」。若 homeDir 没配/被移动/读不到 SnowLuma 的
     // config/onebot_<QQ>.json，自愈就无从下手，这时才会一直连不上 —— 那种情况请查
     // 日志里的「token 自愈失败」与 config.json 的 snowluma.homeDir。
-    log(`SnowLuma 首次连接未成功（将在后台自动重连并尝试自愈 WS token）: ${error?.message ?? error}`);
+    log(`SnowLuma 首次连接未成功（后台会重连；仍连不上时看门狗每 ${Math.round(WS_CONNECT_STALL_MS / 1000)}s 强制重建一次）: ${describeError(error)}`);
   });
+
+  // ── WS 连接看门狗（不能省：SDK 的重连在「首次就没连上」时会永久卡死） ──────────
+  // 事故（2026-10-24）：先启桥接、LLBot 还在等扫码（3001 未监听）→ Node 22 内置
+  // WebSocket 只发 error 不发 close → SDK 的 connectPromise 永不 settle、之后每次
+  // connect() 都返回同一个 pending promise → 永久放弃重连；又因为没有 close，
+  // 挂在 close 上的换账号 token 自愈也永远不会跑。
+  // 用户侧表现最坑：进程活着、控制台可达、LLBot 显示已登录、面板「全部就绪」，
+  // 但 QQ 消息一条都收不到。这个触发顺序（先启动服务、再扫码登录）对普通用户是常态，
+  // 所以必须是常驻兜底，而不是"首次失败重连一次"。
+  const wsSupervisor = createWsSupervisor({
+    client: bot,
+    stallMs: WS_CONNECT_STALL_MS,
+    log,
+    onForced: (info) => {
+      // 连续卡死多半是 token 与当前账号不一致（换号/重启 LLBot 后）：每 3 次顺带自愈一次，
+      // 既覆盖"close 从不触发所以自愈从不跑"的坑，又不跟 SDK 自身的重连抢时序。
+      if (info.attempt % 3 === 0) void healTokenIfStale('connect-watchdog');
+    },
+  });
+  wsSupervisor.start();
   log('桥接已启动。按 Ctrl+C 退出。');
   // 预热表情库：启动时同步一次 QQ 收藏表情，失败不阻塞（AI 首次调用工具时还会再试）。
   if (cfg.socialV2?.sticker?.enabled !== false) {

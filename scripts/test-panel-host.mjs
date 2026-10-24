@@ -14,12 +14,13 @@
  */
 
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdtemp, mkdir, writeFile, readFile, stat, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   assertLoopbackUrl,
   createServiceManager,
@@ -28,6 +29,9 @@ import {
   resolveRepoDir,
   waitPort,
 } from '../plugins/qq-bridge-panel/lib/panel-core.js'
+
+// 真实仓库根（临时目录里造的是被测"仓库"，客户端契约检查要读本仓库自己的文件）
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 const results = []
 function check(name, fn) {
@@ -71,7 +75,9 @@ function readBody(req) {
 }
 
 /** 假桥接控制台：行为可按测试用例覆盖。 */
-async function startFakeBridge({ mode = 'reserved2', dshReady = true, token = 'test-token', supportTicket = true, modelPostSupported = true, modelState } = {}) {
+async function startFakeBridge({ mode = 'reserved2', dshReady = true, token = 'test-token', supportTicket = true, modelPostSupported = true, modelState, upstream } = {}) {
+  // upstream 默认模拟"WS 已连上"；传对象可模拟具体形态，传 null 表示老桥接（不上报该字段）。
+  const upstreamPayload = upstream === undefined ? { connected: true, accountOnline: null, degraded: false } : upstream
   const calls = []
   const state = {
     mode,
@@ -90,7 +96,12 @@ async function startFakeBridge({ mode = 'reserved2', dshReady = true, token = 't
       res.end(JSON.stringify(payload))
     }
     if (url.pathname === '/api/status') {
-      json({ ok: true, mode: state.mode, dshReady: state.dshReady, snowluma: { connected: true, accountOnline: null, degraded: false } })
+      json({
+        ok: true,
+        mode: state.mode,
+        dshReady: state.dshReady,
+        ...(upstreamPayload === null ? {} : { snowluma: upstreamPayload }),
+      })
       return
     }
     if (url.pathname === '/api/mode' && req.method === 'POST') {
@@ -383,6 +394,84 @@ try {
     await local.stop('bridge')
   })
 
+  // ── 消息链路（桥接 ↔ LLBot OneBot WS）────────────────────────────────────
+  // 事故原样（2026-10-24）：服务全在跑、QQ 也登录了，桥接的 WS 却永久没连上
+  // （Node 22 连不上只发 error 不发 close → SDK 的 connectPromise 卡死）。
+  // 旧版面板只看端口/HTTP，于是显示「全部就绪」，用户消息一条也发不进来。
+  // 这四条断言钉住：这种形态必须是「收发链路中断」，且不再冒充 ready。
+  await check('桥接在跑但没连上 LLBot：综合状态是「收发链路中断」，不能是「全部就绪」', async () => {
+    const fakeLlbot = await startFakeLlbot({ online: true, uin: '12345678', nick: '测试号' })
+    cleanup.push(fakeLlbot)
+    const fakeBridge = await startFakeBridge({
+      mode: 'reserved2',
+      // /api/status 的其余字段（含上游 HTTP 健康 good:true）全部正常，只有 WS 没连上 ——
+      // 这正是事故形态：任何"看端口/看 HTTP"的判断都会误报健康。
+      upstream: { connected: false, accountOnline: true, good: true, degraded: false, silent: false },
+    })
+    cleanup.push(fakeBridge)
+    const saved = JSON.parse(await readFile(path.join(repoDir, 'config.json'), 'utf8'))
+    saved.snowluma.webuiUrl = fakeLlbot.url
+    saved.consolePort = fakeBridge.port
+    await writeFile(path.join(repoDir, 'config.json'), JSON.stringify(saved, null, 2), 'utf8')
+    const local = makeManager()
+    const status = await local.status()
+    assert.equal(status.services.bridge.health, 'ok', '桥接进程本身是健康的（端口/HTTP 都通）')
+    assert.equal(status.services.qq.state, 'online')
+    assert.equal(status.messagePath.connected, false)
+    assert.equal(status.messagePath.state, 'degraded')
+    assert.equal(status.messagePath.action, 'restart-bridge')
+    assert.match(status.messagePath.detail, /收不到|发不出/)
+    assert.equal(status.aggregate, 'upstream', `不能报 ${status.aggregate}（${status.aggregateText}）`)
+    assert.equal(status.aggregateText, '收发链路中断')
+  })
+
+  await check('消息链路连上后恢复为「全部就绪」', async () => {
+    const fakeLlbot = await startFakeLlbot({ online: true, uin: '12345678', nick: '测试号' })
+    cleanup.push(fakeLlbot)
+    const fakeBridge = await startFakeBridge({ upstream: { connected: true, accountOnline: true, good: true } })
+    cleanup.push(fakeBridge)
+    const saved = JSON.parse(await readFile(path.join(repoDir, 'config.json'), 'utf8'))
+    saved.snowluma.webuiUrl = fakeLlbot.url
+    saved.consolePort = fakeBridge.port
+    await writeFile(path.join(repoDir, 'config.json'), JSON.stringify(saved, null, 2), 'utf8')
+    const local = makeManager()
+    const status = await local.status()
+    assert.equal(status.messagePath.state, 'ok')
+    assert.equal(status.messagePath.connected, true)
+    assert.equal(status.aggregate, 'ready', status.aggregateText)
+  })
+
+  await check('老桥接不上报 connected：如实标 unknown，不误报也不吓人去重启', async () => {
+    const fakeLlbot = await startFakeLlbot({ online: true, uin: '12345678', nick: '测试号' })
+    cleanup.push(fakeLlbot)
+    const fakeBridge = await startFakeBridge({ upstream: null })   // 老版 /api/status 没这个字段
+    cleanup.push(fakeBridge)
+    const saved = JSON.parse(await readFile(path.join(repoDir, 'config.json'), 'utf8'))
+    saved.snowluma.webuiUrl = fakeLlbot.url
+    saved.consolePort = fakeBridge.port
+    await writeFile(path.join(repoDir, 'config.json'), JSON.stringify(saved, null, 2), 'utf8')
+    const local = makeManager()
+    const status = await local.status()
+    assert.equal(status.messagePath.state, 'unknown')
+    assert.equal(status.messagePath.connected, null)
+    assert.equal(status.messagePath.actionable, false)
+    assert.equal(status.aggregate, 'ready', '老版本不能因为"确认不了"就报故障')
+  })
+
+  await check('等待扫码时消息链路未连通也不抢「等待登录」的结论', async () => {
+    const fakeLlbot = await startFakeLlbot({ online: false })
+    cleanup.push(fakeLlbot)
+    const fakeBridge = await startFakeBridge({ upstream: { connected: false, accountOnline: false } })
+    cleanup.push(fakeBridge)
+    const saved = JSON.parse(await readFile(path.join(repoDir, 'config.json'), 'utf8'))
+    saved.snowluma.webuiUrl = fakeLlbot.url
+    saved.consolePort = fakeBridge.port
+    await writeFile(path.join(repoDir, 'config.json'), JSON.stringify(saved, null, 2), 'utf8')
+    const local = makeManager()
+    const status = await local.status()
+    assert.equal(status.aggregate, 'waiting-login', `应为等待登录，实际 ${status.aggregate}`)
+  })
+
   await check('open(console)：优先一次性票据，URL 里不含长期 token', async () => {
     const fakeBridge = await startFakeBridge({ mode: 'reserved2', supportTicket: true })
     cleanup.push(fakeBridge)
@@ -670,6 +759,20 @@ try {
     assert.equal(status.model.scope, 'session')
     assert.ok(Array.isArray(status.model.catalog.groups))
     assert.equal(status.model.catalog.failures.length, 1)
+  })
+
+  // ── 客户端契约：状态判定变了，UI 必须跟着显示，否则后端修好了、界面还在报绿 ──
+  await check('客户端契约：新增「收发链路中断」状态有对应 UI（色调/状态卡/一键重启）', async () => {
+    const clientPath = path.join(ROOT, 'plugins', 'qq-bridge-panel', 'client.js')
+    const source = await readFile(clientPath, 'utf8')
+    assert.match(source, /upstream: 'error'/, 'aggregate=upstream 必须有色调映射，否则 pill 会变成灰色"未知"')
+    assert.match(source, /status\.messagePath/, '客户端必须消费 messagePath')
+    assert.match(source, /'消息链路'/, '系统状态里要有「消息链路」一项')
+    assert.match(source, /messagePath\.state === 'degraded'/, '链路断了要出提示条')
+    assert.match(source, /post\('\/restart', \{ service: 'bridge' \}\)/, '提示条里要能就地重启桥接')
+    // 语法自检（客户端是自注册脚本，语法错会让整个设置页白屏）
+    const syntax = spawnSync(process.execPath, ['--check', clientPath], { encoding: 'utf8' })
+    assert.equal(syntax.status, 0, `client.js 语法错误：${syntax.stderr}`)
   })
 
   const failed = results.filter((row) => !row.ok)

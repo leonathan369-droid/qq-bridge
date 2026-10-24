@@ -7,7 +7,19 @@
 
 > Connect QQ messages to DeepSeek Harness (DSH) agents: QQ friends/groups become DSH conversations, and agent replies (including questions and tool approvals) are sent back to QQ.
 
-> ⚠️ **Current release `v0.3.0`, targets DSH 0.2.0-rc.2** (verified item by item on that version; run `npm run verify:adaptation`). It uses the persistent local signing key to **mint the session Cookie offline**, slash RPC endpoints and the `/api/remote.mux` event stream — a protocol generation introduced in DSH `0.1.2-alpha.1`, incompatible with the older dot-endpoint protocol. Reading the launch token out of the old guard logs has not worked since DSH 0.1.7 (the token is generated per process and never written to disk). Agent presets are `@deepseek-ai/dsh-agent-preset` Cordis rows since DSH 0.1.7 (the `~/.dsh/.agent-presets/` directory mechanism is gone). On **DSH `0.1.1-rc.2` or earlier**, use tag [`v0.1.0`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.0); for **DSH 0.1.5-rc.1** use [`v0.1.5`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.5); for **DSH 0.1.7-rc.2** use [`v0.1.7`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.7).
+> ⚠️ **Current release `v0.3.1`, targets DSH 0.2.0-rc.2** (verified item by item on that version; run `npm run verify:adaptation`). It uses the persistent local signing key to **mint the session Cookie offline**, slash RPC endpoints and the `/api/remote.mux` event stream — a protocol generation introduced in DSH `0.1.2-alpha.1`, incompatible with the older dot-endpoint protocol. Reading the launch token out of the old guard logs has not worked since DSH 0.1.7 (the token is generated per process and never written to disk). Agent presets are `@deepseek-ai/dsh-agent-preset` Cordis rows since DSH 0.1.7 (the `~/.dsh/.agent-presets/` directory mechanism is gone). On **DSH `0.1.1-rc.2` or earlier**, use tag [`v0.1.0`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.0); for **DSH 0.1.5-rc.1** use [`v0.1.5`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.5); for **DSH 0.1.7-rc.2** use [`v0.1.7`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.7).
+>
+> **v0.3.1 (2026-10-24)** fixes a silent failure where **the panel showed all-green while zero messages got through**.
+> If the bridge was started before LLBot finished its QR login, the first OneBot WebSocket connect failed and
+> never retried: Node 22's built-in WebSocket emits `error` but **no `close`** on a refused connection, so
+> `@snowluma/sdk`'s `connectPromise` never settles and every later `connect()` returns that same pending promise —
+> reconnection is dead for good (and the `close`-driven token self-heal never runs either). Messages to QQ simply
+> produced no reaction, while the old panel — which only looked at ports/HTTP — reported "all ready". Now:
+> ① a resident **WS connect watchdog** in the bridge (stuck in CONNECTING for >8 s ⇒ force rebuild, with token
+> self-heal every third attempt); ② the panel reports **message path** (bridge ↔ LLBot) as its own check and shows
+> "message path down" with a one-click "restart bridge" instead of "all ready"; ③ connect errors are logged with
+> their message instead of `{}`. Regression **34/34** (new watchdog unit test + real-process end-to-end recovery
+> test). See [docs/RELEASE-v0.3.1.md](docs/RELEASE-v0.3.1.md).
 >
 > The default branch `main` **is** this version — a plain `git clone` gets it, no branch switching needed.
 

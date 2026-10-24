@@ -52,7 +52,7 @@ export const MODE_RISK = {
     + '只应在你完全信任的私聊（ownerQQ）里使用；群里任何人都不能进入这个模式。',
 }
 /** 面板版本（status 里透出，便于确认 DSH 加载的是哪一版 host 半）。 */
-export const PANEL_VERSION = '0.3.0'
+export const PANEL_VERSION = '0.3.1'
 
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
 
@@ -754,6 +754,38 @@ export function createServiceManager({
   // 令牌掩码：**一个字符都不回显**，只给长度。前端只需要知道「配了没有」。
   const maskToken = (value) => (value ? `已配置（${String(value).length} 位，不在面板/接口里回显）` : '')
 
+  /**
+   * 消息链路：桥接到底有没有连上 LLBot 的 OneBot WebSocket。
+   *
+   * 为什么必须单独判（2026-10-24 真实事故）：「桥接控制台可达」≠「收得到 QQ 消息」。
+   * 先启桥接、再扫码登录 LLBot 时，桥接的 WS 客户端首次连接就失败且**永不重连**，
+   * 而 /api/status 依然健康（get_status 走 HTTP，是通的）→ 面板四项全绿「全部就绪」，
+   * 用户却一条回复都收不到。只用端口/HTTP 推断永远发现不了这种状态，必须看
+   * `snowluma.connected` 这个由真实 WS 连接状态写出的字段。
+   */
+  function messagePathOf(bridge) {
+    if (!bridge?.live) {
+      return { state: STATE.UNKNOWN, connected: null, detail: '桥接未运行或控制台不可达，无法确认消息链路', actionable: false }
+    }
+    const up = bridge.live.snowluma
+    if (typeof up?.connected !== 'boolean') {
+      // 老版本桥接不上报该字段：如实说"确认不了"，不要假报健康，也不要把用户吓去重启。
+      return { state: STATE.UNKNOWN, connected: null, detail: '桥接未上报消息链路状态（版本较旧），无法确认能否收发', actionable: false }
+    }
+    if (up.connected === true) {
+      const online = up.accountOnline === true ? '，账号在线' : up.accountOnline === false ? '，账号离线' : ''
+      return { state: STATE.OK, connected: true, detail: `桥接已连上 LLBot OneBot${online}（消息可收发）`, actionable: false }
+    }
+    return {
+      state: STATE.DEGRADED,
+      connected: false,
+      detail: '桥接在运行，但没连上 LLBot 的 OneBot WebSocket：QQ 消息收不到、回复也发不出',
+      hint: '桥接启动时 LLBot 若还没就绪（例如还没扫码登录），修复版会自动重连；旧版需要重启桥接。',
+      action: 'restart-bridge',
+      actionable: true,
+    }
+  }
+
   // ── 状态汇总 ──────────────────────────────────────────────────────────────
 
   async function status() {
@@ -790,7 +822,9 @@ export function createServiceManager({
       qq = { state: 'online', detail: 'OneBot 自报在线', source: 'onebot /get_status' }
     }
 
-    // 综合状态：全部就绪 / 部分就绪 / 等待登录 / 服务异常 / 全部停止
+    const messagePath = messagePathOf(bridge)
+
+    // 综合状态：全部就绪 / 部分就绪 / 等待登录 / 收发链路中断 / 服务异常 / 全部停止
     let aggregate = 'stopped'
     let aggregateText = '全部停止'
     const running = (bridgeState === STATE.OK || bridgeState === STATE.DEGRADED) || (llbotState === STATE.OK || llbotState === STATE.DEGRADED)
@@ -806,6 +840,11 @@ export function createServiceManager({
     } else if (qq.state !== 'online') {
       aggregate = 'waiting-login'
       aggregateText = qq.state === STATE.WAITING ? '等待 QQ 登录' : '等待 QQ 登录（状态未知）'
+    } else if (messagePath.state === STATE.DEGRADED) {
+      // 服务全在跑、QQ 也登录了，唯独桥接↔LLBot 的 WS 没连上：**这就是收发全废的状态**，
+      // 绝不能判"全部就绪"（2026-10-24 事故原样：面板全绿、消息一条不进）。
+      aggregate = 'upstream'
+      aggregateText = '收发链路中断'
     } else if (bridgeState === STATE.OK && llbotState === STATE.OK && dsh.state === STATE.OK) {
       aggregate = 'ready'
       aggregateText = '全部就绪'
@@ -899,6 +938,9 @@ export function createServiceManager({
       },
       aggregate,
       aggregateText,
+      // 消息链路（桥接 ↔ LLBot OneBot WS）：与端口/HTTP 健康分开报，
+      // 否则「服务全在、面板全绿、消息一条不进」这种事故永远显示不出来。
+      messagePath,
       services: {
         bridge: {
           label: 'QQ Bridge',
