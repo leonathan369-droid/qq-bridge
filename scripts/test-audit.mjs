@@ -39,6 +39,10 @@ const tests = [
   // 端到端：真实 bridge 进程 + "LLBot 晚到"（先启桥接、后扫码登录的常态顺序）。
   // 起临时仓库副本、DSH/LLBot 全指向死端口、只做 101 握手的假 OneBot，约 12s。
   'test-bridge-ws-recovery.mjs',
+  // 回合追踪：回合外事件（如 subagent/catalog）绝不能留下永久的回合收集器，
+  // 否则 isConversationBusyV2() 恒 true → 唤醒全部"暂存"、会话永久哑火
+  // （2026-10-24 第二次事故：「又不回消息了」而 DSH 侧其实空闲）。
+  'test-turn-tracker.mjs',
   // 启动器与编码（乱码根因：.cmd 里的非 ASCII 会被 cmd 按 ANSI 解码）
   'test-encoding.mjs',
   // 控制台乱码机制（UTF-8 字节被按 GBK 解码）+ chcp 修复

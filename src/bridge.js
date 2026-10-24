@@ -27,6 +27,7 @@ import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } fro
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
 import { extractForwardIds, forwardIdFromData, sanitizeForwardId, formatForwardResponse } from './forward.js';
 import { createWsSupervisor, describeError } from './ws-supervisor.js';
+import { isTurnScopedEvent, staleCollectorSessions } from './turn-tracker.js';
 import { resolvePriceTable } from './model-prices.js';
 import { createTokenLedger } from './token-ledger.js';
 import {
@@ -2845,6 +2846,9 @@ async function main() {
     }
     if (!restored) return;
     collectors.set(sessionId, collector);
+    // 恢复出来的回合必须同时记上起点：isConversationBusyV2 / 兜底回收都以
+    // 「有收集器 ⇒ 有回合起点」为前提，只放收集器会让回收逻辑误判成残留。
+    if (!v2TurnStartAt.has(sessionId)) v2TurnStartAt.set(sessionId, Date.now());
     log(`重连后恢复了进行中的回合（${sessionId}，turn ${[...open].join(',')}）`);
   }
 
@@ -2875,6 +2879,7 @@ async function main() {
   let dshReady = false;
   let dshCheckStarted = false;
   let snowlumaWatchStarted = false; // SnowLuma 上游健康探测只启动一次（见 startSnowlumaWatch）
+  let turnWatchStarted = false;   // 回合追踪兜底回收只启动一次
   let currentMode = 'chat'; // chat | closed-agent | reserved（仿真模式，由 DSH settings / state/mode.json 驱动）
   let lastMode = currentMode;
   // closed-agent 模式使用的 DSH agent preset：留空表示「用 DSH 自己声明的默认 preset」。
@@ -3407,6 +3412,36 @@ async function main() {
     }
     snowlumaHealth.goodCheckedAt = Date.now();
     reportSnowlumaHealth();
+  }
+
+  /**
+   * 回合追踪兜底回收（事故说明见 src/turn-tracker.js）。
+   *
+   * 为什么需要：`isConversationBusyV2()` 只要看到收集器就不投递任何唤醒。正常回合由
+   * turn/end 清理，但事件流断连/漏事件/新的回合外事件类型都可能留下永远等不到 turn/end
+   * 的收集器 —— 一旦出现，这个会话就再也叫不醒（QQ 上表现为"发消息不回"，而 DSH 空闲）。
+   * 这里 60s 校正一次，只在真的发现残留时回收并打日志，正常回合（含几分钟的长回合）不动。
+   */
+  function startTurnWatchdog() {
+    if (turnWatchStarted) return;
+    turnWatchStarted = true;
+    setInterval(() => {
+      if (!collectors.size) return;
+      const stale = staleCollectorSessions({
+        sessions: [...collectors.keys()],
+        turnStartedAtOf: (sid) => v2TurnStartAt.get(sid),
+        now: Date.now(),
+      });
+      for (const item of stale) {
+        collectors.delete(item.sessionId);
+        v2TurnStartAt.delete(item.sessionId);
+        const key = reverse.get(item.sessionId);
+        const why = item.reason === 'no-turn-marker'
+          ? '没有进行中的回合（回合外事件留下的残留）'
+          : `回合已持续 ${Math.round(item.ageMs / 60000)} 分钟仍未结束（疑似漏掉 turn/end）`;
+        log(`⚠️ 回收残留回合收集器 ${key ?? item.sessionId}：${why} → 会话不再被误判繁忙`);
+      }
+    }, 60_000);
   }
 
   function startSnowlumaWatch() {
@@ -11225,6 +11260,20 @@ async function main() {
                 }
               }
             }
+            // ⚠️ 只有「回合内」的事件才建收集器（判定见 src/turn-tracker.js）。
+            // 事故（2026-10-24）：turn/end 之后 DSH 还会往同一会话追加回合外事件
+            // （实测 subagent/catalog —— mnemon 的空闲检查子 agent，turn/end 后 30s 到），
+            // 旧代码给每条事件都建收集器，而收集器只在收到 turn/end 时才删除 →
+            // 这个收集器永远等不到结束，isConversationBusyV2() 恒 true，会话永久哑火：
+            // QQ 上「又不回消息了」，DSH 侧其实空闲、事件也照常流入。
+            if (!isTurnScopedEvent({
+              type: frame.event.type,
+              turnActive: v2TurnStartAt.has(frame.sessionId),
+              hasCollector: collectors.has(frame.sessionId)
+            })) {
+              // 回合外事件：上面的 token 记账/工具记账已做，这里只跳过回合推进。
+              continue;
+            }
             const collector = collectors.get(frame.sessionId) ?? createTurnCollector();
             collectors.set(frame.sessionId, collector);
             const ended = collector.push(frame.event);
@@ -11818,6 +11867,7 @@ async function main() {
   }
   startDshWatch();
   startSnowlumaWatch();
+  startTurnWatchdog();
   startConsoleServer();
 
   await pumpMux();

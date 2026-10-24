@@ -7,7 +7,18 @@
 
 > Connect QQ messages to DeepSeek Harness (DSH) agents: QQ friends/groups become DSH conversations, and agent replies (including questions and tool approvals) are sent back to QQ.
 
-> ⚠️ **Current release `v0.3.1`, targets DSH 0.2.0-rc.2** (verified item by item on that version; run `npm run verify:adaptation`). It uses the persistent local signing key to **mint the session Cookie offline**, slash RPC endpoints and the `/api/remote.mux` event stream — a protocol generation introduced in DSH `0.1.2-alpha.1`, incompatible with the older dot-endpoint protocol. Reading the launch token out of the old guard logs has not worked since DSH 0.1.7 (the token is generated per process and never written to disk). Agent presets are `@deepseek-ai/dsh-agent-preset` Cordis rows since DSH 0.1.7 (the `~/.dsh/.agent-presets/` directory mechanism is gone). On **DSH `0.1.1-rc.2` or earlier**, use tag [`v0.1.0`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.0); for **DSH 0.1.5-rc.1** use [`v0.1.5`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.5); for **DSH 0.1.7-rc.2** use [`v0.1.7`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.7).
+> ⚠️ **Current release `v0.3.2`, targets DSH 0.2.0-rc.2** (verified item by item on that version; run `npm run verify:adaptation`). It uses the persistent local signing key to **mint the session Cookie offline**, slash RPC endpoints and the `/api/remote.mux` event stream — a protocol generation introduced in DSH `0.1.2-alpha.1`, incompatible with the older dot-endpoint protocol. Reading the launch token out of the old guard logs has not worked since DSH 0.1.7 (the token is generated per process and never written to disk). Agent presets are `@deepseek-ai/dsh-agent-preset` Cordis rows since DSH 0.1.7 (the `~/.dsh/.agent-presets/` directory mechanism is gone). On **DSH `0.1.1-rc.2` or earlier**, use tag [`v0.1.0`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.0); for **DSH 0.1.5-rc.1** use [`v0.1.5`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.5); for **DSH 0.1.7-rc.2** use [`v0.1.7`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.7).
+>
+> **v0.3.2 (2026-10-24)** fixes a second "messages get no reaction" failure: **an out-of-turn event
+> pinned the session as busy forever**. After `turn/end`, DSH still appends out-of-turn events to the same
+> session (observed: `subagent/catalog` from mnemon's idle-check subagent). The bridge used to create a turn
+> collector for *every* session/event, and a collector is only removed on `turn/end` — so that collector could
+> never end, `isConversationBusyV2()` stayed true forever, and every wake-up (@/poke/keyword/question) was
+> only staged into `pendingWakeReasons`, never delivered: total silence on QQ while the DSH session was idle
+> and events kept flowing (13 unread piled up). Now: ① only **turn-scoped** events create collectors
+> (`src/turn-tracker.js`; unknown types default to no collector); ② a 60 s watchdog reclaims collectors with
+> no turn marker and turns older than 30 minutes; ③ DSH reconnect recovery now records the turn start too.
+> Regression **35/35**. See [docs/RELEASE-v0.3.2.md](docs/RELEASE-v0.3.2.md).
 >
 > **v0.3.1 (2026-10-24)** fixes a silent failure where **the panel showed all-green while zero messages got through**.
 > If the bridge was started before LLBot finished its QR login, the first OneBot WebSocket connect failed and

@@ -15,7 +15,7 @@
 
 把 QQ 消息接入 DSH agent：QQ 好友/群发来的消息会变成 DSH 会话里的用户消息，agent 的回复（含提问、工具审批）会发回 QQ。
 
-> ⚠️ **当前版本 `v0.3.1`，适配 DSH 0.2.0-rc.2**（在该版本上逐项实测：`npm run verify:adaptation`）。
+> ⚠️ **当前版本 `v0.3.2`，适配 DSH 0.2.0-rc.2**（在该版本上逐项实测：`npm run verify:adaptation`）。
 > 鉴权用 `~/.dsh` 里持久化的浏览器会话签名密钥**离线铸造 Cookie** —— DSH 0.1.7 起进程启动 token
 > 只存在于内存、不再落盘，旧版「从 guard 日志里读 token」的方式已失效。agent preset 是 DSH 0.1.7 起的
 > `@deepseek-ai/dsh-agent-preset` Cordis 行（`~/.dsh/.agent-presets/` 目录机制已废）。协议代次
@@ -40,6 +40,16 @@
 > 全局默认模型）、一次性票据打开控制台、可折叠诊断。回归 **32/32**；作用域验收脚本
 > `npm run verify:panel-isolation`。详见 [docs/guides/QQ_PANEL.md](docs/guides/QQ_PANEL.md)
 > 与 [docs/RELEASE-v0.3.0.md](docs/RELEASE-v0.3.0.md)。
+>
+> **v0.3.2（2026-10-24）**：修第二个「发消息没反应」的形态 —— **回合外事件把会话永久判成繁忙**。
+> DSH 在 `turn/end` 之后还会往同一会话追加回合外事件（实测 `subagent/catalog`：mnemon 插件的
+> 空闲检查子 agent）。桥接旧代码给**每条** session/event 都建回合收集器，而收集器只在收到
+> `turn/end` 时删除 → 这个收集器永远等不到结束，`isConversationBusyV2()` 恒为 true，
+> 之后每一次唤醒（@/拍一拍/关键词/提问）都只写进 `pendingWakeReasons`「暂存」，一条不投递：
+> QQ 上完全静默，而 DSH 侧会话空闲、消息也正常流入（本次群未读堆到 13）。现在：① 只有
+> **回合内事件**才建收集器（`src/turn-tracker.js`，未知类型默认不建）；② 60 秒兜底回收
+> 无回合起点的残留收集器与超过 30 分钟仍未结束的回合；③ DSH 重连恢复进行中回合时补记回合
+> 起点。回归 **35/35**。详见 [docs/RELEASE-v0.3.2.md](docs/RELEASE-v0.3.2.md)。
 >
 > **v0.3.1（2026-10-24）**：修一个「**面板全绿、消息一条进不来**」的隐蔽故障。先启动服务、
 > 再扫码登录 LLBot 时，桥接的 OneBot WebSocket 首次连接会失败，而失败路径上 Node 22 内置

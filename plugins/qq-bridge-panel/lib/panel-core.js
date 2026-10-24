@@ -52,7 +52,7 @@ export const MODE_RISK = {
     + '只应在你完全信任的私聊（ownerQQ）里使用；群里任何人都不能进入这个模式。',
 }
 /** 面板版本（status 里透出，便于确认 DSH 加载的是哪一版 host 半）。 */
-export const PANEL_VERSION = '0.3.1'
+export const PANEL_VERSION = '0.3.2'
 
 const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
 
