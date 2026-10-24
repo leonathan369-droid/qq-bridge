@@ -14,6 +14,7 @@
 #   PUB_NAME="your-github-name" \
 #   PUB_EMAIL="you@users.noreply.github.com" \
 #   PUB_QQ=123456789 \            # 可选：额外擦除该 QQ 号
+#   PUB_EXTRA="host.local,nickname" \  # 可选：额外擦除的字符串（逗号分隔，替换成 <redacted>）
 #   ./scripts/publish-public.sh
 #
 #   PUB_DRY_RUN=1 ...             # 只重写 + 自检，不 push
@@ -27,6 +28,10 @@ DRY_RUN="${PUB_DRY_RUN:-0}"
 PUB_QQ="${PUB_QQ:-}"
 OLD_NAME="$(git -C "$SRC" config user.name || true)"
 PUB_HOME="${PUB_HOME:-$HOME}"
+# 额外擦除列表（逗号分隔）：机器名、旧昵称等不在 $HOME / PUB_QQ 规则里的字面串。
+# 为什么需要：作者邮箱里的主机名（如你@你机器.local）只被 --env-filter 换掉作者身份，
+# 一旦它也出现在**提交信息或文件内容**里就漏了；而旧昵称同样可能出现在提交信息里。
+PUB_EXTRA="${PUB_EXTRA:-}"
 
 [[ -n "$DEST" ]] || { echo "缺少目标仓库：请设置 PUB_DEST" >&2; exit 1; }
 [[ -n "$NAME" && -n "$EMAIL" ]] || { echo "缺少公开身份：请设置 PUB_NAME / PUB_EMAIL" >&2; exit 1; }
@@ -49,6 +54,9 @@ old_name = os.environ.get('OLD_NAME', '').strip()
 new_name = os.environ.get('PUB_NAME', '').strip()
 
 rules = []
+for pat in [p.strip() for p in os.environ.get('PUB_EXTRA', '').split(',')]:
+    if pat:
+        rules.append((pat.encode(), b'<redacted>'))
 if home:
     generic = '/Users/you' if home.startswith('/Users/') else '/home/you'
     rules.append((home.encode(), generic.encode()))
@@ -84,7 +92,7 @@ for root, dirs, files in os.walk('.'):
 print(f'files changed: {changed}', file=sys.stderr)
 PY
 
-export PUB_HOME PUB_QQ OLD_NAME PUB_NAME
+export PUB_HOME PUB_QQ OLD_NAME PUB_NAME PUB_EXTRA
 echo "==> 重写历史（文件内容 / 提交信息 / 身份）"
 FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f \
   --tree-filter "python3 '$WORK/rewrite.py' tree" \
@@ -103,8 +111,10 @@ git gc --prune=now --quiet
 
 echo "==> 隐私自检（应全部为 0）"
 status=0
-for pat in "$PUB_HOME" "$PUB_QQ" "$OLD_NAME"; do
-  [[ -n "$pat" ]] || continue
+extra_list=()
+if [[ -n "$PUB_EXTRA" ]]; then IFS=',' read -r -a extra_list <<< "$PUB_EXTRA"; fi
+for pat in "$PUB_HOME" "$PUB_QQ" "$OLD_NAME" "${extra_list[@]:-}"; do
+  [[ -n "${pat:-}" ]] || continue
   n=$(git log --all -p 2>/dev/null | grep -c -F -- "$pat" || true)
   echo "  $pat: $n"
   [[ "$n" != "0" ]] && status=1
