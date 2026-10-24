@@ -146,6 +146,26 @@ function normalizeRows(rows, preset) {
 }
 
 /** 渲染一个 preset 的 patch 文件内容。 */
+// 角色卡同步标记（见 scripts/sync-role-to-preset.mjs）：preset 源文件里用
+// `<!-- ROLE-CARD:BEGIN/END -->` 圈出角色卡，方便脚本把 roles/<名字>.md 同步进去。
+// 这些标记只是给同步脚本看的，**不能进**最终 prompt（它们会变成 system prompt 正文），
+// 所以生成 patch 时统一剥掉。
+const ROLE_CARD_MARKER_RE = /^[ \t]*<!--[ \t]*ROLE-CARD:(?:BEGIN|END)[^\n]*-->[ \t]*\n?/gm;
+
+export function stripRoleCardMarkers(text) {
+  if (typeof text !== 'string') return text;
+  return text.replace(ROLE_CARD_MARKER_RE, '');
+}
+
+export function stripRoleCardMarkersDeep(value) {
+  if (typeof value === 'string') return stripRoleCardMarkers(value);
+  if (Array.isArray(value)) return value.map((item) => stripRoleCardMarkersDeep(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, stripRoleCardMarkersDeep(v)]));
+  }
+  return value;
+}
+
 export function renderPatch(name) {
   const dir = sourceDirFor(name);
   const meta = readYaml(path.join(dir, 'preset.yml'));
@@ -153,7 +173,8 @@ export function renderPatch(name) {
   for (const field of ['name', 'description', 'order']) {
     if (meta[field] === undefined) throw new Error(`${name}: preset.yml 缺少 ${field}`);
   }
-  const plugins = normalizeRows(readYaml(path.join(dir, 'agent.cordis.yml')), name);
+  // 去掉给同步脚本看的 <!-- ROLE-CARD:... --> 标记行（不能进 prompt）
+  const plugins = stripRoleCardMarkersDeep(normalizeRows(readYaml(path.join(dir, 'agent.cordis.yml')), name));
   const row = {
     id: presetRowId(name),
     name: '@deepseek-ai/dsh-agent-preset',

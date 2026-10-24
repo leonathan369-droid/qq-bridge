@@ -20,11 +20,84 @@ const dnsLookup = dns.promises.lookup;
 // 真实流量由 utun 设备接管。此时「域名解析到内网 ⇒ 拒绝」会把全部公网抓取误杀，
 // 现象是图片/表情/web_fetch 全部报「域名解析到内网/本机地址，已阻止」。
 //
-// 开启后**只**放过 198.18.0.0/15 这一个 IETF 基准测试保留段；10/127/172.16/192.168/
+// 放过时**只**放过 198.18.0.0/15 这一个 IETF 基准测试保留段；10/127/172.16/192.168/
 // 169.254/CGNAT 等真正的内网段仍然照常拦截，IPv6 判定完全不变。
 // 安全边界说明：fake-IP 环境里内网服务本来就不会解析到 198.18，因此放过该段不会
 // 让攻击者借此访问内网；这是「代理环境可用性」与「SSRF 防护」之间的显式取舍。
-const ALLOW_PROXY_FAKE_IP = process.env.QQ_BRIDGE_ALLOW_PROXY_FAKE_IP === '1';
+//
+// 默认策略（2026-10-24 改）：**自动识别**。以前只有手动设 QQ_BRIDGE_ALLOW_PROXY_FAKE_IP=1
+// 才放行，普通用户不知道要设，结果"看得到消息、看不到图"（图片/表情/web_fetch 全部报
+// 「域名解析到内网/本机地址，已阻止」）。现在启动时探测几个固定公网域名：如果它们的
+// DNS 结果全都落在 198.18.0.0/15，就判定本机处于 TUN fake-IP 代理环境并自动放行。
+// 仍然可以手动覆盖：QQ_BRIDGE_ALLOW_PROXY_FAKE_IP=1 强制放行 / =0 强制严格。
+// 关键限制：放行**只对域名生效**。URL 里直接写 IP 字面量（包括直接写 198.18.x.x）
+// 一律仍按内网拦截 —— fake-IP 是 DNS 层现象，不该成为「用 IP 直连某段地址」的许可。
+const PROXY_FAKE_IP_ENV = String(process.env.QQ_BRIDGE_ALLOW_PROXY_FAKE_IP ?? '').trim();
+// 探测用固定公网域名（不依赖任何用户输入，避免被诱导去解析攻击者域名）。
+const FAKE_IP_PROBE_HOSTS = ['www.baidu.com', 'www.qq.com', 'example.com'];
+const FAKE_IP_CACHE_MS = 5 * 60_000;
+
+/** 198.18.0.0/15 是 IETF 基准测试保留段，Clash/Surge/sing-box 的 fake-IP 常用它。 */
+export function isProxyFakeIpv4(ip) {
+  const parts = String(ip ?? '').split('.').map(Number);
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n))) return false;
+  return parts[0] === 198 && parts[1] >= 18 && parts[1] <= 19;
+}
+
+/**
+ * 由探测结果判定是否为 fake-IP 环境（纯函数，便于回归测试）。
+ * @param {Array<string[]|null>} probeAddresses 每个探测域名解析出的地址列表；失败给 null
+ * @returns {boolean} 至少两个域名答出来、且这些域名的解析结果**全部**落在 198.18.0.0/15
+ */
+export function evaluateFakeIpProbe(probeAddresses = []) {
+  let answered = 0;
+  let hits = 0;
+  for (const addresses of probeAddresses) {
+    if (!Array.isArray(addresses) || addresses.length === 0) continue;
+    answered += 1;
+    if (addresses.every((address) => isProxyFakeIpv4(address))) hits += 1;
+  }
+  return answered >= 2 && hits >= 2;
+}
+
+let fakeIpCache = { at: 0, value: false };
+let fakeIpInflight = null;
+
+/** 仅供测试：清掉探测缓存，让下一次判定重新解析。 */
+export function resetProxyFakeIpCache() {
+  fakeIpCache = { at: 0, value: false };
+  fakeIpInflight = null;
+}
+
+/**
+ * 本机是否处于 TUN fake-IP 代理环境（DNS 把公网域名映射进保留段）。
+ * 结果缓存 5 分钟：用户可能中途才开代理，不必重启桥接。
+ */
+export async function detectProxyFakeIpMode() {
+  if (Date.now() - fakeIpCache.at < FAKE_IP_CACHE_MS) return fakeIpCache.value;
+  if (fakeIpInflight) return fakeIpInflight;
+  fakeIpInflight = (async () => {
+    const probes = await Promise.all(FAKE_IP_PROBE_HOSTS.map(async (host) => {
+      try {
+        const list = await withTimeout(dnsLookup(host, { all: true, verbatim: true }), 2000, `DNS 探测 ${host}`);
+        return (list ?? []).map((row) => row.address);
+      } catch {
+        return null; // 探测失败按"没答"处理，绝不影响正常抓取
+      }
+    }));
+    const value = evaluateFakeIpProbe(probes);
+    fakeIpCache = { at: Date.now(), value };
+    return value;
+  })().finally(() => { fakeIpInflight = null; });
+  return fakeIpInflight;
+}
+
+/** 当前是否放行 198.18.0.0/15：env 显式设置优先，否则自动识别。 */
+export async function proxyFakeIpAllowed() {
+  if (PROXY_FAKE_IP_ENV === '1') return true;
+  if (PROXY_FAKE_IP_ENV === '0') return false;
+  return detectProxyFakeIpMode();
+}
 
 function withTimeout(promise, ms, label) {
   let timer;
@@ -76,7 +149,16 @@ function parseEmbeddedIpv4(h) {
   return null;
 }
 
-export function isPrivateIp(ip) {
+/**
+ * @param {string} ip
+ * @param {{ allowProxyFakeIp?: boolean }} [options]
+ *   显式指定是否放过 198.18.0.0/15（fake-IP 代理段）。默认只认 env 开关；
+ *   异步调用方（resolveSafeHost）会传入自动识别结果。
+ */
+export function isPrivateIp(ip, options = {}) {
+  const allowProxyFakeIp = options.allowProxyFakeIp === undefined
+    ? PROXY_FAKE_IP_ENV === '1'
+    : options.allowProxyFakeIp === true;
   let h = String(ip || '').toLowerCase().replace(/^\[|\]$/g, '');
   const family = net.isIP(h);
   // DNS 返回值也必须是有效 IP；不能把非法地址当成公网地址。
@@ -92,7 +174,7 @@ export function isPrivateIp(ip) {
     if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
     if (parts[0] === 192 && parts[1] === 168) return true;
     if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return true;
-    if (parts[0] === 198 && parts[1] >= 18 && parts[1] <= 19 && !ALLOW_PROXY_FAKE_IP) return true;
+    if (parts[0] === 198 && parts[1] >= 18 && parts[1] <= 19 && !allowProxyFakeIp) return true;
     if (parts[0] === 192 && parts[1] === 0 && parts[2] === 0) return true;
     if (parts[0] >= 224) return true;
     return false;
@@ -106,14 +188,14 @@ export function isPrivateIp(ip) {
     // 本地 NAT64 前缀的 IPv4 位布局不等同 /96；整个本地前缀均不可供公网抓取。
     if (h.startsWith('64:ff9b:1:')) return true;
     const embedded = parseEmbeddedIpv4(h);
-    if (embedded) return isPrivateIp(embedded);
+    if (embedded) return isPrivateIp(embedded, { allowProxyFakeIp });
     if (h.startsWith('2001:db8')) return true;
     if (h.startsWith('2001:2:') || h.startsWith('2001:10:') || h.startsWith('2001:20:')) return true;
     const sixth4 = h.match(/^2002:([0-9a-f]{1,4}):([0-9a-f]{1,4}):/i);
     if (sixth4) {
       const num = (parseInt(sixth4[1], 16) << 16) + parseInt(sixth4[2], 16);
       const ipv4 = `${(num >>> 24) & 255}.${(num >>> 16) & 255}.${(num >>> 8) & 255}.${num & 255}`;
-      if (isPrivateIp(ipv4)) return true;
+      if (isPrivateIp(ipv4, { allowProxyFakeIp })) return true;
     }
     if (h.startsWith('ff')) return true;
     return false;
@@ -129,7 +211,9 @@ export async function resolveSafeHost(hostname) {
     throw new Error('禁止访问内网/本机地址');
   }
   if (net.isIP(h)) {
-    if (isPrivateIp(h)) throw new Error('禁止访问内网/本机地址');
+    // IP 字面量永远按内网规则判定：fake-IP 放行只服务于"域名 → 保留段"这种 DNS 现象，
+    // 不能让 URL 里直接写 198.18.x.x 也获得通行证。
+    if (isPrivateIp(h, { allowProxyFakeIp: false })) throw new Error('禁止访问内网/本机地址');
     return h;
   }
   let addresses;
@@ -139,9 +223,15 @@ export async function resolveSafeHost(hostname) {
     throw new Error(`域名解析失败：${error?.message ?? error}`);
   }
   if (!addresses.length) throw new Error('域名没有解析结果');
+  // 只有"主机名是域名"的路径才可能拿到 fake-IP 放行，并且要真的探测到本机是 fake-IP 环境。
+  const allowProxyFakeIp = await proxyFakeIpAllowed();
   for (const { address } of addresses) {
-    if (isPrivateIp(address)) {
-      throw new Error('域名解析到内网/本机地址，已阻止');
+    if (isPrivateIp(address, { allowProxyFakeIp })) {
+      const hint = isProxyFakeIpv4(address) && !allowProxyFakeIp
+        ? '（该地址属于 198.18.0.0/15：看起来本机在用 Clash/Surge 的 TUN fake-IP 代理。'
+          + '可设 QQ_BRIDGE_ALLOW_PROXY_FAKE_IP=1 强制放行；自动识别失败时也会提示到这里）'
+        : '';
+      throw new Error(`域名解析到内网/本机地址，已阻止${hint}`);
     }
   }
   return addresses[0].address;

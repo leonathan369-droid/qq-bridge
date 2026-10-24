@@ -15,7 +15,7 @@
 
 把 QQ 消息接入 DSH agent：QQ 好友/群发来的消息会变成 DSH 会话里的用户消息，agent 的回复（含提问、工具审批）会发回 QQ。
 
-> ⚠️ **当前版本 `v0.3.2`，适配 DSH 0.2.0-rc.2**（在该版本上逐项实测：`npm run verify:adaptation`）。
+> ⚠️ **当前版本 `v0.3.3`，适配 DSH 0.2.0-rc.2**（在该版本上逐项实测：`npm run verify:adaptation`）。
 > 鉴权用 `~/.dsh` 里持久化的浏览器会话签名密钥**离线铸造 Cookie** —— DSH 0.1.7 起进程启动 token
 > 只存在于内存、不再落盘，旧版「从 guard 日志里读 token」的方式已失效。agent preset 是 DSH 0.1.7 起的
 > `@deepseek-ai/dsh-agent-preset` Cordis 行（`~/.dsh/.agent-presets/` 目录机制已废）。协议代次
@@ -40,6 +40,18 @@
 > 全局默认模型）、一次性票据打开控制台、可折叠诊断。回归 **32/32**；作用域验收脚本
 > `npm run verify:panel-isolation`。详见 [docs/guides/QQ_PANEL.md](docs/guides/QQ_PANEL.md)
 > 与 [docs/RELEASE-v0.3.0.md](docs/RELEASE-v0.3.0.md)。
+>
+> **v0.3.3（2026-10-24）**：修「**他看不到图**」。本机在跑 Clash/Surge 一类 **TUN fake-IP 代理**时
+> （实测 `multimedia.nt.qq.com.cn`→`198.18.0.9`、baidu→`198.18.0.17`），`safe-fetch` 的 SSRF 防护把
+> `198.18.0.0/15` 当内网，于是图片/表情/`web_fetch` **全部**被拦：日志刷「域名解析到内网/本机地址，
+> 已阻止」，QQ 上表现为"消息看得到、图永远看不到"。现在启动时**自动识别** fake-IP 环境并只放行该保留段，
+> 且**仅对域名生效**（URL 里直接写 `198.18.x.x`、以及 10/127/172.16/192.168/169.254/CGNAT 与 IPv6 内网
+> 一律照旧拦截）；`/api/status.network.proxyFakeIp` 可见结论。同时修掉两处遗留：① `qq_get_prompt` 在
+> `role.injectPerMessage=false` 时 `role.hint` 恒为空（唤醒提示让 AI 去查，查不到）→ 现在返回角色卡全文
+> （实测 0 → 4994 字）；② 新增 **角色卡 → preset 常驻人格同步**（`npm run check:role` / `sync:role`
+> + preset 内 `<!-- ROLE-CARD:BEGIN/END -->` 标记，生成 patch 时剥离标记，产物逐字节不变），
+> 解决"控制台改了角色卡、QQ 里的 AI 一点没变"。回归 **37/37**。详见
+> [docs/RELEASE-v0.3.3.md](docs/RELEASE-v0.3.3.md)。
 >
 > **v0.3.2（2026-10-24）**：修第二个「发消息没反应」的形态 —— **回合外事件把会话永久判成繁忙**。
 > DSH 在 `turn/end` 之后还会往同一会话追加回合外事件（实测 `subagent/catalog`：mnemon 插件的

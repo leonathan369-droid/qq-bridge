@@ -225,6 +225,15 @@ node scripts/setup-dsh.mjs                # 注册三个 bundle（含 qq-bridge-
   - 「未知」＝ 桥接没上报这个字段（旧版桥接）。请升级到 `v0.3.1`。
   - 都会显示「已连通」还是没回复，再看 [README §SnowLuma 版本与上游健康](../../README.md#snowluma-版本与上游健康连上了但收不到消息)
     里的 `good` / `[Hook]` 判定（那是 QQ → SnowLuma 的原生接收链路退化了）。
+- **AI 说"看不到图 / 图糊了"**：先看桥接 `GET /api/status` 的 `network.proxyFakeIp`。
+  本机若在跑 Clash/Surge 的 **TUN fake-IP 代理**，域名会解析到 `198.18.0.0/15`，`v0.3.3` 之前
+  SSRF 防护会把图片 GET 全部拦掉（日志：`图片 URL 抓取失败: 域名解析到内网/本机地址，已阻止`）。
+  `v0.3.3` 起会自动识别并只放行该保留段；识别不到（代理分流规则只覆盖部分域名）时，
+  设环境变量 `QQ_BRIDGE_ALLOW_PROXY_FAKE_IP=1` 后重启桥接即可。
+  QQ 图片下载 URL 本身有有效期：翻很旧的消息取图会 `download url has expired`，属正常。
+- **改了角色卡，QQ 里的 AI 没变化**：`role.injectPerMessage=false` 时人格由 preset 的常驻提示承载。
+  改完 `roles/<名字>.md` 后执行 `npm run sync:role`（预览用 `npm run check:role`）→
+  `node scripts/build-agent-preset-patches.mjs` → 重启 DSH。
 - **QQ 已登录、消息链路「已连通」，但 AI 不回复**：分两种，看桥接日志区分：
   - `[reserved2] 会话繁忙，暂存唤醒原因 …` 反复出现 = 桥接**误判会话繁忙**，唤醒被暂存不投递
     （`v0.3.2` 之前的缺陷：回合外事件如 `subagent/catalog` 留下的收集器永不结束）。升级后由

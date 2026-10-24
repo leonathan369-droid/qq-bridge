@@ -7,7 +7,20 @@
 
 > Connect QQ messages to DeepSeek Harness (DSH) agents: QQ friends/groups become DSH conversations, and agent replies (including questions and tool approvals) are sent back to QQ.
 
-> ⚠️ **Current release `v0.3.2`, targets DSH 0.2.0-rc.2** (verified item by item on that version; run `npm run verify:adaptation`). It uses the persistent local signing key to **mint the session Cookie offline**, slash RPC endpoints and the `/api/remote.mux` event stream — a protocol generation introduced in DSH `0.1.2-alpha.1`, incompatible with the older dot-endpoint protocol. Reading the launch token out of the old guard logs has not worked since DSH 0.1.7 (the token is generated per process and never written to disk). Agent presets are `@deepseek-ai/dsh-agent-preset` Cordis rows since DSH 0.1.7 (the `~/.dsh/.agent-presets/` directory mechanism is gone). On **DSH `0.1.1-rc.2` or earlier**, use tag [`v0.1.0`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.0); for **DSH 0.1.5-rc.1** use [`v0.1.5`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.5); for **DSH 0.1.7-rc.2** use [`v0.1.7`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.7).
+> ⚠️ **Current release `v0.3.3`, targets DSH 0.2.0-rc.2** (verified item by item on that version; run `npm run verify:adaptation`). It uses the persistent local signing key to **mint the session Cookie offline**, slash RPC endpoints and the `/api/remote.mux` event stream — a protocol generation introduced in DSH `0.1.2-alpha.1`, incompatible with the older dot-endpoint protocol. Reading the launch token out of the old guard logs has not worked since DSH 0.1.7 (the token is generated per process and never written to disk). Agent presets are `@deepseek-ai/dsh-agent-preset` Cordis rows since DSH 0.1.7 (the `~/.dsh/.agent-presets/` directory mechanism is gone). On **DSH `0.1.1-rc.2` or earlier**, use tag [`v0.1.0`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.0); for **DSH 0.1.5-rc.1** use [`v0.1.5`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.5); for **DSH 0.1.7-rc.2** use [`v0.1.7`](https://github.com/Derpyu520/qq-bridge/releases/tag/v0.1.7).
+>
+> **v0.3.3 (2026-10-24)** fixes "**the bot can never see images**". With a TUN **fake-IP proxy**
+> (Clash/Surge style; measured: `multimedia.nt.qq.com.cn`→`198.18.0.9`, baidu→`198.18.0.17`), the
+> `safe-fetch` SSRF guard classified `198.18.0.0/15` as private, so **every** image/emoji/`web_fetch`
+> fetch was blocked ("域名解析到内网/本机地址，已阻止"): messages were visible, images never were. The
+> bridge now **auto-detects** a fake-IP environment and allows only that reserved range, and **only for
+> hostnames** (literal `198.18.x.x` URLs and all real private/IPv6 private ranges stay blocked);
+> `/api/status.network.proxyFakeIp` reports the verdict. Two leftovers fixed as well: ① `qq_get_prompt`
+> returned `role.hint: ""` whenever `role.injectPerMessage=false` (the wake prompt told the model to look
+> there — a dead end) — it now returns the full card (measured 0 → 4994 chars); ② a **role card → preset
+> persona sync** (`npm run check:role` / `sync:role`, with `<!-- ROLE-CARD:BEGIN/END -->` markers that are
+> stripped at patch generation, so generated patches stay byte-identical), fixing "edited the role card in
+> the console but the QQ persona never changed". Regression **37/37**. See [docs/RELEASE-v0.3.3.md](docs/RELEASE-v0.3.3.md).
 >
 > **v0.3.2 (2026-10-24)** fixes a second "messages get no reaction" failure: **an out-of-turn event
 > pinned the session as busy forever**. After `turn/end`, DSH still appends out-of-turn events to the same

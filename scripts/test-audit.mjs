@@ -43,6 +43,11 @@ const tests = [
   // 否则 isConversationBusyV2() 恒 true → 唤醒全部"暂存"、会话永久哑火
   // （2026-10-24 第二次事故：「又不回消息了」而 DSH 侧其实空闲）。
   'test-turn-tracker.mjs',
+  // 图片/表情的 SSRF 防护与 TUN fake-IP 代理兼容（2026-10-24「他看不到图」现场）：
+  // 自动识别 198.18.0.0/15 后放行，但 IP 字面量与真内网段仍必须拦截。
+  'test-safe-fetch-fakeip.mjs',
+  // 角色卡 → preset 常驻人格的同步校验（改了卡不生效的坑）+ qq_get_prompt 全文契约。
+  'test-role-preset-sync.mjs',
   // 启动器与编码（乱码根因：.cmd 里的非 ASCII 会被 cmd 按 ANSI 解码）
   'test-encoding.mjs',
   // 控制台乱码机制（UTF-8 字节被按 GBK 解码）+ chcp 修复

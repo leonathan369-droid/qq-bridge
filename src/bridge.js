@@ -21,7 +21,7 @@ import { mdToPlain, splitForQQ, truncateText, truncateTextTail } from './md-to-p
 import { SENSITIVE_RE } from './sensitive.js';
 import { looksLikeUnfinished } from './v2-wait.js';
 import { compactModelMessage } from './qq-model-view.js';
-import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
+import { safeFetchBuffer, looksLikeImageBuffer, detectProxyFakeIpMode } from './safe-fetch.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, formatBytes, formatDuration, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { discoverSnowLumaConnection, persistSnowLumaEndpoint, persistToken } from './snowluma-conn.js';
 import { hardenDir, manualDirCommand } from './state-acl.mjs';
@@ -3300,6 +3300,9 @@ async function main() {
   // 取 8s：正常握手在本机是个位数毫秒，LLBot 启动到能握手也只有几百毫秒；
   // 太短会在正常抖动时误杀，太长会让"先启桥接、后扫码登录"的用户白等。
   const WS_CONNECT_STALL_MS = 8_000;
+  // 网络环境自检结果（暴露到 /api/status，便于"看不到图"时一眼定位）。
+  // proxyFakeIp: null=未探测 / true=检测到 TUN fake-IP 代理并已放行该保留段。
+  const networkHealth = { proxyFakeIp: null };
   const snowlumaHealth = {
     // 必须显式初始化：早期版本漏了这个键，于是 JSON.stringify 把 `connected: undefined`
     // 直接省略，面板/控制台只能拿到「字段不存在」，无法区分「未连接」与「老版本没上报」。
@@ -3773,6 +3776,7 @@ async function main() {
             // 上游健康只给操作者看：它包含网关诊断信息（good/hint），
             // 属于管理侧观测，不该进 QQ 会话里那个受限的智能体视图。
             snowluma: snowlumaHealthSnapshot(),
+            network: { proxyFakeIp: networkHealth.proxyFakeIp },
             activity: readActivityTail(100)
           });
           return;
@@ -5123,7 +5127,14 @@ async function main() {
             ok: true,
             key,
             time: new Date().toISOString(),
-            role: { name: roleState.role ?? null, hint: currentMode === 'reserved2' ? currentRoleHintV2() : currentRoleHint() },
+            // qq_get_prompt 是按需调用：无论 injectPerMessage 开关如何都返回角色卡全文，
+            // 否则「完整角色卡请调用 qq_get_prompt 查看」这句提示查不到任何东西（实测 hint 长度 0）。
+            role: {
+              name: roleState.role ?? null,
+              hint: currentMode === 'reserved2'
+                ? currentRoleHintV2({ ignoreInjectPerMessage: true })
+                : currentRoleHint({ ignoreInjectPerMessage: true })
+            },
             recommended: cfg.socialV2?.provideRecommendations === false ? null : {
               wake: cfg.socialV2?.wake ?? {},
               send: cfg.socialV2?.send ?? {},
@@ -9546,12 +9557,17 @@ async function main() {
     if (!selected) return '';
     return selected.length > roleInjectMaxChars ? truncateText(selected, roleInjectMaxChars) : selected;
   }
-  function currentRoleHint() {
+  function currentRoleHint({ ignoreInjectPerMessage = false } = {}) {
     // 逐条注入开关（config.role.injectPerMessage，默认 true 保持上游行为）。
     // 上游选择每条消息都附角色卡，是为了对抗 DSH 上下文压缩导致的人格丢失；
     // 代价是整张卡会随每条 user message 进入会话历史，token 线性膨胀。
     // 设为 false 后角色卡不再进历史，人格应改由预设的 system prompt 承载。
-    if (cfg.role?.injectPerMessage === false) return '';
+    //
+    // ignoreInjectPerMessage 只给 `qq_get_prompt` 用：唤醒提示里那句
+    // 「完整角色卡请调用 qq_get_prompt 查看」在 injectPerMessage=false 时曾经是死链
+    // （工具走同一个开关 → role.hint 恒为空，实测长度 0）。工具是**按需调用**，
+    // 不存在"每条消息都进历史"的成本，所以这里应当无视该开关返回全文。
+    if (!ignoreInjectPerMessage && cfg.role?.injectPerMessage === false) return '';
     return roleHintForMode('v1');
   }
 
@@ -9642,9 +9658,11 @@ async function main() {
     return `第 ${bad.join('，')} 条之间像是把同一句话拆开了；如果两条拼起来才完整，请合并成一条，或把断点移到完整句子的边界。`;
   }
 
-  function currentRoleHintV2() {
+  function currentRoleHintV2({ ignoreInjectPerMessage = false } = {}) {
     // 与 currentRoleHint 同一开关：关掉后二代也不再把角色卡塞进每条提示词。
-    if (cfg.role?.injectPerMessage === false) return '';
+    // 但 `qq_get_prompt`（按需调用）传 ignoreInjectPerMessage=true 时仍要拿到全文，
+    // 否则唤醒提示里的「完整角色卡请调用 qq_get_prompt 查看」就是死链。
+    if (!ignoreInjectPerMessage && cfg.role?.injectPerMessage === false) return '';
     // 先按 〔二代〕/〔一代〕 标记筛小节；下面的逐行过滤只是给「没标记的老卡片」兜底。
     const raw = roleHintForMode('v2');
     if (!raw) return '';
@@ -11860,6 +11878,17 @@ async function main() {
     },
   });
   wsSupervisor.start();
+  // 代理 fake-IP 自检（2026-10-24 现场事故：DNS 全解析到 198.18.0.x 的 TUN 代理环境里，
+  // 严格 SSRF 判定会把**所有**图片/表情/web_fetch 抓取拦掉 → 现象是「消息看得到、图看不到」）。
+  // safeFetchBuffer 内部已按需自动识别；这里启动时探一次只是为了把结论写进日志与 /api/status。
+  void detectProxyFakeIpMode().then((proxyFakeIp) => {
+    networkHealth.proxyFakeIp = proxyFakeIp;
+    if (proxyFakeIp) {
+      log('检测到 TUN fake-IP 代理环境（公网域名解析到 198.18.0.0/15）：已自动放行该保留段的公网抓取'
+        + '（图片/表情/web_fetch 可用）；10/127/172.16/192.168/169.254/CGNAT 等真内网段仍然拦截');
+    }
+  }).catch((error) => log(`网络环境自检失败（不影响主流程）：${error?.message ?? error}`));
+
   log('桥接已启动。按 Ctrl+C 退出。');
   // 预热表情库：启动时同步一次 QQ 收藏表情，失败不阻塞（AI 首次调用工具时还会再试）。
   if (cfg.socialV2?.sticker?.enabled !== false) {
