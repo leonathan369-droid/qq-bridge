@@ -8221,6 +8221,7 @@ async function main() {
     let index = 0;
     let totalBytes = 0;
     for (const media of Array.isArray(mediaList) ? mediaList : []) {
+      if (media?.kind === 'record') continue;
       index += 1;
       if (index > MAX_MEDIA_COUNT) {
         parts.push({ type: 'text', text: `[图片/表情 ${index}（超过单条上限 ${MAX_MEDIA_COUNT}，已跳过）]` });
@@ -8263,6 +8264,7 @@ async function main() {
     let index = 0;
     let totalBytes = 0;
     for (const media of Array.isArray(mediaList) ? mediaList : []) {
+      if (media?.kind === 'record') continue;
       index += 1;
       if (index > MAX_MEDIA_COUNT) {
         out.push({ index, kind: media?.kind === 'face' ? 'face' : 'image', text: `（超过单条上限 ${MAX_MEDIA_COUNT}，已跳过）` });

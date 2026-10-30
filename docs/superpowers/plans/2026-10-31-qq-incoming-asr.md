@@ -62,7 +62,7 @@
 - `GET /api/voice/message?key=...&messageId=...` returns text-only transcript data under existing image-route auth and mode gates.
 
 - [x] Extend the harness tests first for eager-transcript insertion, disabled fallback, voice hints, and endpoint authorization; run to confirm failure.
-- [x] Add deep-merged `socialV2.asr` defaults and `tools.getVoice=false`; transcribe before appending messages and use the same capped, untrusted annotation for prompts.
+- [x] Add deep-merged `socialV2.asr` defaults and `tools.getVoice=false`; transcribe before appending messages, keep record media out of image-only inlining, and use the same capped, untrusted annotation for prompts.
 - [x] Add per-minute rate limiting and one warning on failure without blocking the message path; avoid transcript logging.
 - [x] Add the authenticated lazy endpoint, cache-first lookup, and ASR model-status data used by the console.
 - [x] Run the focused ASR harness checks and existing bridge contract checks.

@@ -49,6 +49,9 @@ console.log('## 入库前转写与关闭时占位回退');
     h.setMode('reserved2');
     h.cfg.socialV2.tools.getVoice = true;
     h.cfg.snowluma = { homeDir: h.temp };
+    const voiceOnlyMedia = [{ kind: 'record', file: 'x.silk', url: 'file:///tmp/x.silk', duration: 5 }];
+    assert.equal((await h.resolveMediaList(voiceOnlyMedia)).length, 0, 'legacy inline media resolver skips audio records');
+    assert.equal((await h.fetchMediaData(voiceOnlyMedia)).length, 0, 'image API media fetcher skips audio records');
     const audioPath = path.join(h.temp, 'voice.silk');
     fs.writeFileSync(audioPath, Buffer.from('fixture audio'));
     const event = {
@@ -149,6 +152,13 @@ console.log('## 入库前转写与关闭时占位回退');
     assert.equal(cached.data.transcript, fakeTranscript, '补听端点直接返回已缓存转写');
     assert.equal(cached.data.cached, true, '补听端点标明使用缓存');
     await new Promise((resolve) => server.close(resolve));
+
+    h.setMode('chat');
+    fakeAsrFailure = false;
+    await h.handleIncoming('group', '456', { ...event, message_id: 'voice-message-chat', message_seq: 4 }, h.cfg);
+    assert.equal(h.calls.images.length, 0, '一代消息解析不能把 record 媒体误当图片内联');
+    const chatPromptParts = h.calls.prompts.at(-1).content.map((part) => part.text || '').join('\n');
+    assert.ok(!chatPromptParts.includes('图片获取失败'), '一代 prompt 不应给已转写语音附加图片获取失败占位');
   } finally {
     await h.close();
   }
