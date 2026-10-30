@@ -9,6 +9,8 @@
 // 修法：自动识别 fake-IP 环境后只放行 198.18.0.0/15，且**只对域名生效**；
 // IP 字面量与其它真内网段一律照旧拦截。本测试就是钉住这条安全边界。
 import path from 'node:path'
+import https from 'node:https'
+import { EventEmitter } from 'node:events'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -93,6 +95,42 @@ const check = (label, cond, extra = '') => {
   }
   if (dnsUnavailable) console.log('ℹ️ 本机 DNS 不可用，跳过公网域名解析断言（不算失败）')
   else check('公网域名在两种环境下都能通过（正常 DNS / fake-IP 自动放行）', allowedPublic)
+}
+
+// ── ⑥ 音频允许关闭图片签名校验，但仍走相同的 URL 与响应大小守卫 ──────────────
+{
+  const audio = Buffer.from('fixture audio bytes')
+  const originalRequest = https.request
+  https.request = (_options, callback) => {
+    const req = new EventEmitter()
+    req.end = () => queueMicrotask(() => {
+      const res = new EventEmitter()
+      res.statusCode = 200
+      res.headers = {}
+      res.complete = true
+      res.destroy = () => {}
+      callback(res)
+      res.emit('data', audio)
+      res.emit('end')
+    })
+    req.destroy = () => {}
+    return req
+  }
+  try {
+    let binaryAccepted = false
+    try {
+      const result = await m.safeFetchBuffer('https://8.8.8.8/record.silk', 1024, { validateImage: false })
+      binaryAccepted = result.buffer.equals(audio)
+    } catch {}
+    check('ASR 显式关闭图片签名校验后可安全抓取音频字节', binaryAccepted)
+
+    let imageDefaultKept = false
+    try { await m.safeFetchBuffer('https://8.8.8.8/record.silk', 1024) }
+    catch (error) { imageDefaultKept = /不是有效图片/.test(String(error?.message ?? error)) }
+    check('不传选项时仍拒绝非图片响应', imageDefaultKept)
+  } finally {
+    https.request = originalRequest
+  }
 }
 
 console.log(failed === 0 ? '\n✅ safe-fetch fake-IP 兼容与安全边界测试通过' : `\n❌ ${failed} 项失败`)

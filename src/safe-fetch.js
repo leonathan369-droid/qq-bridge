@@ -390,9 +390,10 @@ export function looksLikeImageBuffer(buf) {
   return false;
 }
 
-/** 抓取图片字节并返回 Buffer（带 SSRF 防护，且校验确实为图片）。 */
-export async function safeFetchBuffer(urlString, maxBytes = 4 * 1024 * 1024) {
+/** 抓取字节并返回 Buffer（带 SSRF 防护；默认只接受图片，媒体调用可显式关闭图片签名检查）。 */
+export async function safeFetchBuffer(urlString, maxBytes = 4 * 1024 * 1024, options = {}) {
   validateLimit(maxBytes, 'maxBytes');
+  const validateImage = options?.validateImage !== false;
   const MAX_REDIRECTS = 5;
   let { url, ip } = await validateFetchUrl(urlString);
   for (let i = 0; i <= MAX_REDIRECTS; i++) {
@@ -406,7 +407,7 @@ export async function safeFetchBuffer(urlString, maxBytes = 4 * 1024 * 1024) {
     if (result.statusCode < 200 || result.statusCode >= 300) {
       throw new Error(`图片抓取失败：HTTP ${result.statusCode}`);
     }
-    if (!looksLikeImageBuffer(result.buffer)) {
+    if (validateImage && !looksLikeImageBuffer(result.buffer)) {
       throw new Error(`抓取内容不是有效图片（PNG/JPEG/GIF/WebP）`);
     }
     return { url: url.toString(), statusCode: result.statusCode, buffer: result.buffer };
