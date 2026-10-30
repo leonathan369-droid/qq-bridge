@@ -101,6 +101,6 @@
 **Files:**
 - No additional product files.
 
-- [ ] Run `npm run test:asr`, `npm run test:audit`, `npm run test:voice`, `npm run test:voice:system`, `npm run test:token`, `npm run test:console-ui`, `npm run test:mcp-servers`, `npm run privacy-scan`, and preset patch `--check`; report each real result.
-- [ ] Inspect `git diff --stat` and `git status`; ensure no model, generated audio, config, or state artifact is tracked.
-- [ ] Commit each verified task milestone on the current branch. Push only if the existing remote can accept the branch without publishing unrelated local history or rewriting history.
+- [ ] Run `npm run test:asr`, `npm run test:audit`, `npm run test:voice`, `npm run test:voice:system`, `npm run test:token`, `npm run test:console-ui`, `npm run test:mcp-servers`, `npm run privacy-scan`, and preset patch `--check`; all were attempted, but `test-console-ui` exits before browser startup because Playwright is unavailable and the task forbids adding it.
+- [x] Inspect `git diff --stat` and `git status`; the model is gitignored, no generated audio/config/state file is tracked, and temporary ASR work directories are empty.
+- [x] Commit each verified task milestone on the current branch. The push condition was not met: `origin/main` is divergent and pushing would publish unrelated local history.
