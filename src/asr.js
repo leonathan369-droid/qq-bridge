@@ -64,16 +64,17 @@ export function resolveAsrConfig(cfg = {}) {
     const model = path.isAbsolute(merged.modelPath) ? merged.modelPath : path.resolve(ROOT, merged.modelPath);
     const binPath = executablePath(merged.binPath, 'whisper-cli');
     const ffmpegPath = executablePath(merged.ffmpegPath, 'ffmpeg');
-    if (!binPath) return { ...merged, ok: false, reason: '找不到可执行的 whisper-cli', model };
-    if (!ffmpegPath) return { ...merged, ok: false, reason: '找不到可执行的 ffmpeg', binPath, model };
+    const ffprobePath = executablePath('', 'ffprobe');
+    if (!binPath) return { ...merged, ok: false, reason: '找不到可执行的 whisper-cli', model, ffprobePath };
+    if (!ffmpegPath) return { ...merged, ok: false, reason: '找不到可执行的 ffmpeg', binPath, model, ffprobePath };
     try {
       if (!fs.statSync(model).isFile() || fs.statSync(model).size <= 0) {
-        return { ...merged, ok: false, reason: 'ASR 模型文件为空或不是普通文件', binPath, ffmpegPath, model };
+        return { ...merged, ok: false, reason: 'ASR 模型文件为空或不是普通文件', binPath, ffmpegPath, model, ffprobePath };
       }
     } catch {
-      return { ...merged, ok: false, reason: 'ASR 模型未安装', binPath, ffmpegPath, model };
+      return { ...merged, ok: false, reason: 'ASR 模型未安装', binPath, ffmpegPath, model, ffprobePath };
     }
-    return { ...merged, ok: true, reason: '', binPath, ffmpegPath, model };
+    return { ...merged, ok: true, reason: '', binPath, ffmpegPath, ffprobePath, model };
   } catch (error) {
     return { ...DEFAULTS, ok: false, reason: `ASR 配置无效：${error?.message ?? error}` };
   }
@@ -152,6 +153,18 @@ async function transcribeNow(buffer, options, config, digest) {
     const wavPath = path.join(workDir, 'converted.wav');
     fs.writeFileSync(inputPath, buffer, { mode: 0o600 });
 
+    let sourceDuration = Number(options.duration) || 0;
+    if (sourceDuration <= 0 && config.ffprobePath) {
+      const probeTimeoutMs = Math.min(1000, timeoutMs - (Date.now() - startedAt));
+      if (probeTimeoutMs > 0) {
+        const probe = await runChild(config.ffprobePath, [
+          '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', inputPath
+        ], probeTimeoutMs);
+        const probedDuration = Number(String(probe.stdout ?? '').trim());
+        if (!probe.timedOut && probe.code === 0 && Number.isFinite(probedDuration) && probedDuration > 0) sourceDuration = probedDuration;
+      }
+    }
+
     const remainingBeforeFfmpeg = Math.max(1, timeoutMs - (Date.now() - startedAt));
     const converted = await runChild(config.ffmpegPath, [
       '-hide_banner', '-loglevel', 'error', '-y', '-i', inputPath,
@@ -169,7 +182,7 @@ async function transcribeNow(buffer, options, config, digest) {
     if (recognized.error || recognized.code !== 0) return { ok: false, reason: 'whisper-cli 转写失败', ms: Date.now() - startedAt, model: config.modelPath };
     const cleaned = cleanTranscript(recognized.stdout, config.maxChars);
     if (!cleaned.text) return { ok: false, reason: '未识别到语音内容', ms: Date.now() - startedAt, model: config.modelPath };
-    const truncated = Number(options.duration) > maxSeconds;
+    const truncated = sourceDuration > maxSeconds;
     let text = cleaned.text;
     let clipped = cleaned.clipped;
     if (truncated && !text.endsWith('…')) {

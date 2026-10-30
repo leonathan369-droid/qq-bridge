@@ -221,7 +221,7 @@ if (!config.ok) {
     const longVoice = spawnSync(config.ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', '-stream_loop', '-1', '-i', wav, '-t', '61', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', longWav], { encoding: 'utf8' });
     assert.equal(longVoice.status, 0, `ffmpeg 生成长音频失败：${longVoice.stderr || longVoice.error || longVoice.status}`);
     const longResult = await asr.transcribeAudio(fs.readFileSync(longWav), {
-      format: 'wav', duration: 61, config: { ...config, maxSeconds: 60, tmpDir: path.join(temp, 'asr') }
+      format: 'wav', config: { ...config, maxSeconds: 60, tmpDir: path.join(temp, 'asr') }
     });
     assert.equal(longResult.ok, true, `长音频应受限处理：${longResult.reason || '未知原因'}`);
     assert.equal(longResult.truncated, true, '超过 maxSeconds 的输入应标记截断');
