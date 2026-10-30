@@ -73,12 +73,15 @@
 - Modify: `public/console.html`
 - Modify: `src/bridge.js`
 - Modify: `config.example.json`
+- Modify: `README.md`
+- Modify: `docs/FOLDER_MAP.md`
+- Modify: `docs/README.md`
 - Modify: `scripts/test-console-ui.mjs`
 
-- [ ] Add a failing UI contract for the ASR enable switch and model status.
-- [ ] Display enabled state, model availability, and model path; save `asr.enabled` through `/api/socialV2/config`.
-- [ ] Deep-merge and normalize `asr` on save so partial updates preserve defaults and hot-update the running bridge.
-- [ ] Run `npm run test:console-ui`.
+- [x] Add a failing UI contract for the ASR enable switch and model status.
+- [x] Display enabled state, model availability, and model path; save `asr.enabled` through `/api/socialV2/config`.
+- [x] Deep-merge and normalize `asr` on save so partial updates preserve defaults and hot-update the running bridge.
+- [ ] Run `npm run test:console-ui` (Playwright is unavailable locally; static checks and the offline browser fixture were used instead).
 
 ### Task 4: Lazy MCP tool and preset protocol
 
@@ -88,10 +91,10 @@
 - Modify: `dsh/agent-presets/qq-chat-v2/agent.cordis.yml`
 - Modify: `scripts/test-qq-preset-contract.mjs`
 
-- [ ] Add contract checks for the tool flag and exact protocol rule before implementation; confirm failure.
-- [ ] Register `qq_get_message_voice` only when `getVoice` is enabled and return concise transcript/error text.
-- [ ] Append rule 17 to both tool protocols without editing prior wording.
-- [ ] Regenerate preset patches, run `--check`, and run `npm run test:token`.
+- [x] Add contract checks for the tool flag and exact protocol rule before implementation; confirm failure.
+- [x] Register `qq_get_message_voice` only when `getVoice` is enabled and return concise transcript/error text.
+- [x] Append rule 17 to the `qq-chat-v2` tool protocol and an unnumbered runtime voice rule to `qq-chat`; its numbered list is persona text, not a tool protocol, and the generated role card must remain unchanged.
+- [x] Regenerate preset patches, run `--check`, and run `npm run test:token`.
 
 ### Task 5: Full requested verification and local checkpoints
 

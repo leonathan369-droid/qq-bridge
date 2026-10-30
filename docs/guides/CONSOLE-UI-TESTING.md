@@ -45,7 +45,7 @@ node scripts/test-console-ui.mjs --artifacts=docs/ui-verification
 - 一代社交参数与会话阶段。
 - 黑话添加、搜索、标签切换、确认对话框与学习参数。
 - 测试消息、AI 提醒仅发送到 mock API。
-- 全部 24 次写请求与改造前的 API payload 基线逐项完全比较。
+- 全部 24 次写请求的既有字段与改造前的 API payload 基线逐项比较；新增的 ASR / `getVoice` 字段由独立断言检查。
 - 手机 390px 与平板 768px 下九个视图没有页面级横向溢出。
 - 深色模式：切换生效、写入 `localStorage`、刷新后保持、`aria-pressed` 与 `color-scheme` 同步、正文对比度 ≥ 7:1、深色下 390 / 768px 无横向溢出。
 - 未做选择时跟随系统 `prefers-color-scheme`。

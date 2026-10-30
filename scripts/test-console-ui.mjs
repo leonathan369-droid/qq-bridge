@@ -126,6 +126,16 @@ try {
     assert.deepEqual(fixture.requests.at(-1).body, { mode: 'closed-agent', closedAgentPreset: 'qq-chat-v2' });
   });
 
+  if (!original) await test('Local ASR status is visible and disabled by default', async () => {
+    const enabled = await reveal('#asrEnabled');
+    assert.equal(await enabled.isChecked(), false, 'ASR should be off on first load');
+    const status = await (await reveal('#asrModelStatus')).textContent();
+    assert.match(status, /(?:可用|未安装|不可用)/, 'Model availability should be visible');
+    assert.match(status, /state\/models\/ggml-small\.bin/, 'The configured model path should be visible');
+    const tool = await page.locator('[data-v2-tool="getVoice"]');
+    assert.equal(await tool.isChecked(), false, 'Lazy voice tool should be off by default');
+  });
+
   await test('Role creation, selection, clearing and silent-mode contracts', async () => {
     await fill('newRoleName', '契约测试角色');
     await fill('newRoleContent', '温柔、有耐心，回答简洁。');
@@ -178,6 +188,10 @@ try {
     await fill('v2WaitDefaultQuietMs', 0);
     await fill('v2MaxSendMin', 0);
     await check('v2ProvideRecommendations', false);
+    if (!original) {
+      await check('asrEnabled', true);
+      await (await reveal('[data-v2-tool="getVoice"]')).setChecked(true);
+    }
     const firstTool = page.locator('[data-v2-tool]').first();
     await reveal('[data-v2-tool]');
     await firstTool.setChecked(false);
@@ -191,6 +205,10 @@ try {
     assert.equal(body.wait.defaultQuietMs, 0);
     assert.equal(body.send.maxSendPerMinute, 0);
     assert.equal(body.provideRecommendations, false);
+    if (!original) {
+      assert.deepEqual(body.asr, { enabled: true });
+      assert.equal(body.tools.getVoice, true);
+    }
     assert.equal(body.tools[await firstTool.getAttribute('data-v2-tool')], false);
     // The lower save button must submit the same complete configuration.
     await page.waitForFunction(() => document.getElementById('v2AgentPreset').value === 'contract-v2');
@@ -248,9 +266,16 @@ try {
     assert(results.every(x => x.ok), 'Cannot record a baseline from a failed suite');
     await writeFile(baselinePath, JSON.stringify(fixture.requests, null, 2) + '\n');
     console.log(`Recorded original API contracts: ${baselinePath}`);
-  } else await test('All submitted payloads exactly match the pre-redesign console baseline', async () => {
+  } else await test('All legacy payload fields match the pre-redesign console baseline', async () => {
     const expected = JSON.parse(await readFile(baselinePath, 'utf8'));
-    assert.deepEqual(fixture.requests, expected);
+    const actual = structuredClone(fixture.requests);
+    // ASR 与 getVoice 是新增配置；它们由本文件的独立契约校验，不写入旧控制台基线。
+    for (const request of actual) {
+      if (request.path !== '/api/socialV2/config' || !request.body) continue;
+      delete request.body.asr;
+      if (request.body.tools) delete request.body.tools.getVoice;
+    }
+    assert.deepEqual(actual, expected);
   });
 
   if (!original) await test('Token usage panel renders totals, per-conversation and per-turn cost', async () => {

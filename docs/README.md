@@ -23,6 +23,13 @@
 | [guides/CONSOLE-UI-TESTING.md](guides/CONSOLE-UI-TESTING.md) | 控制台离线预览（`npm run preview:console`）与离线浏览器回归（`npm run test:console-ui`）怎么用 | ✅ 2026 整理时自 `scripts/` 移入 |
 | [guides/SECURITY_BASELINE.md](guides/SECURITY_BASELINE.md) | **安全基线与威胁模型**：威胁主体、已实现的边界（准入/工具面/出站/控制台/落盘/网络）、已知残余风险、发布前回归清单、改动检查单 | ✅ **改动安全相关代码前必读**（2026-09-20 新增） |
 
+## superpowers/ —— 功能设计与实施计划
+
+| 文档 | 一句话说明 | 状态 |
+| --- | --- | --- |
+| [superpowers/specs/2026-10-31-qq-incoming-asr-design.md](superpowers/specs/2026-10-31-qq-incoming-asr-design.md) | QQ 收到语音后的本机转写：边界、调用流程、默认关闭与验收标准 | ✅ 2026-10-31 |
+| [superpowers/plans/2026-10-31-qq-incoming-asr.md](superpowers/plans/2026-10-31-qq-incoming-asr.md) | ASR 模块、消息入库、控制台和惰性工具的实施步骤与验证点 | ✅ 2026-10-31 |
+
 ## design/ —— 设计与规划（读设计意图用）
 
 | 文档 | 一句话说明 | 状态 |

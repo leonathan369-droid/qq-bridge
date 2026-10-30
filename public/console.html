@@ -2047,6 +2047,7 @@ button:active:not(:disabled) {
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="sendSticker"> <span><b>qq_send_sticker</b><span class="meta">发送收藏表情（一条消息只能一张，不能带文字）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="collectSticker"> <span><b>qq_collect_sticker</b><span class="meta">AI 偶尔收藏别人发的表情并写简短备注</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getSelfImage"> <span><b>qq_get_self_image</b><span class="meta">查看自己的默认 Q 版形象图片</span></span></label>
+        <label class="v2-tool-item"><input type="checkbox" data-v2-tool="getVoice"> <span><b>qq_get_message_voice</b><span class="meta">按需补听未转写或转写失败的语音（仅返回文本）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="stickerNote"> <span><b>qq_sticker_note</b><span class="meta">给表情记录本地含义/标签/用法</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="setStickerRemark"> <span><b>qq_set_sticker_remark</b><span class="meta">修改 QQ 官方表情备注（默认禁用，慎用）</span></span></label>
         <label class="v2-tool-item"><input type="checkbox" data-v2-tool="sendVoice"> <span><b>qq_send_voice / qq_list_voices</b><span class="meta">发送语音条（只能发语音库里的音频；偶然而为的强表达）</span></span></label>
@@ -2055,6 +2056,10 @@ button:active:not(:disabled) {
 
       </div></details>
 <details class="settings-group"><summary>语音库与语音发送（调试）</summary><div class="settings-content">
+      <div style="margin-bottom:8px">
+        <label style="display:flex;align-items:flex-start;gap:10px;width:100%;margin:0;padding:10px 12px;border:1px solid var(--border-subtle);border-radius:10px;background:var(--surface-subtle)"><input type="checkbox" id="asrEnabled" style="width:auto;flex:0 0 auto;margin-top:3px"> <span style="min-width:0"><b>收到语音后本机转写</b><span class="meta" style="display:block">开启后，语音会在入库前转成文字；默认关闭</span></span></label>
+        <span class="meta" id="asrModelStatus" role="status" style="display:block;margin:8px 10px 0">正在读取本机 ASR 模型状态…</span>
+      </div>
       <div class="meta" style="margin-bottom:8px">
         语音库目录：<code>qq-bridge/audio/</code>（改 <code>socialV2.voice.dir</code> 可换）。把音频文件丢进去即可被 AI 用 <code>qq_send_voice</code> 发出；
         本面板用于调试与试发 —— 试发走的是与 AI 通道相同的解析/校验/限流路径（<code>/api/voice/send</code>），只是由你在控制台触发。
@@ -3251,6 +3256,12 @@ async function loadV2Config() {
     document.querySelectorAll('[data-v2-tool]').forEach(el => {
       el.checked = (c.tools && c.tools[el.dataset.v2Tool] !== false);
     });
+    const asr = c.asr || {};
+    const asrStatus = r.asrStatus || {};
+    document.getElementById('asrEnabled').checked = asr.enabled === true;
+    const modelPath = asrStatus.modelPath || asr.modelPath || 'state/models/ggml-small.bin';
+    const modelState = asrStatus.ok ? '可用' : '未安装或不可用';
+    document.getElementById('asrModelStatus').textContent = `本机 ASR 模型：${modelState}；路径：${modelPath}${!asrStatus.ok && asrStatus.reason ? `；${asrStatus.reason}` : ''}`;
     const w = c.wake || {};
     document.getElementById('v2WakeDefaultMode').value = w.defaultMode === 'active' ? 'active' : 'diving';
     document.getElementById('v2RecDefaultInfinite').checked = w.recommendedDefaultInfinite !== false;
@@ -3330,6 +3341,7 @@ async function saveV2Config() {
     provideRecommendations: document.getElementById('v2ProvideRecommendations').checked,
     autoReplyCheckMs: Math.round(Number(document.getElementById('v2AutoReplyCheckSec').value) || 30) * 1000,
     tools,
+    asr: { enabled: document.getElementById('asrEnabled').checked },
     wake: {
       defaultMode: document.getElementById('v2WakeDefaultMode').value,
       recommendedDefaultInfinite: document.getElementById('v2RecDefaultInfinite').checked,

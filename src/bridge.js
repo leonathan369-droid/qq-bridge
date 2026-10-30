@@ -5145,6 +5145,7 @@ async function main() {
             slangQuery: 'qq_slang_query',
             slangSubmit: 'qq_slang_submit',
             getImages: 'qq_get_message_images',
+            getVoice: 'qq_get_message_voice',
             getForwardMsg: 'qq_get_forward_msg',
             sendPoke: 'qq_send_poke',
             listStickers: 'qq_list_stickers',

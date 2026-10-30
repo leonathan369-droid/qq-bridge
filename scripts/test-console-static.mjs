@@ -18,7 +18,7 @@ console.log('## 元素 ID');
 const ids = [...html.matchAll(/\sid="([A-Za-z0-9_-]+)"/g)].map((m) => m[1]);
 const dups = [...new Set(ids.filter((v, i) => ids.indexOf(v) !== i))];
 ok(dups.length === 0, 'ID 唯一', dups.length ? `重复：${dups.join(', ')}` : `共 ${ids.length} 个`);
-for (const id of ['voiceList', 'voiceRefreshBtn', 'voiceSendBtn', 'voiceSendTarget', 'voiceSendDryRun', 'voiceMsg']) {
+for (const id of ['voiceList', 'voiceRefreshBtn', 'voiceSendBtn', 'voiceSendTarget', 'voiceSendDryRun', 'voiceMsg', 'asrEnabled', 'asrModelStatus']) {
   const n = (html.match(new RegExp(`id="${id}"`, 'g')) ?? []).length;
   ok(n === 1, `语音面板元素 ${id}`, `${n} 处`);
 }
@@ -31,6 +31,7 @@ ok(JSON.stringify(views) === JSON.stringify(pages), 'data-view 与 data-page 一
 console.log('## 工具开关');
 const tools = [...html.matchAll(/data-v2-tool="([A-Za-z]+)"/g)].map((m) => m[1]);
 ok(tools.includes('sendVoice'), 'sendVoice 开关存在', `共 ${tools.length} 个开关`);
+ok(tools.includes('getVoice'), 'getVoice 开关存在', `共 ${tools.length} 个开关`);
 ok(new Set(tools).size === tools.length, '工具开关无重复');
 
 console.log('## 语音面板接线');
@@ -39,6 +40,8 @@ ok(/getElementById\('voiceSendBtn'\)\.addEventListener/.test(html), '试发按�
 ok(/api\('\/api\/voice\/list/.test(html), '面板调用 /api/voice/list（操作者通道，无需 key）');
 ok(/api\('\/api\/voice\/send'/.test(html), '面板调用 /api/voice/send');
 ok(/typeof loadVoiceLibrary === 'function'|async function loadVoiceLibrary/.test(html), 'loadVoiceLibrary 已定义');
+ok(/asrStatus/.test(html) && /getElementById\('asrModelStatus'\)/.test(html), 'ASR 模型状态从配置接口显示');
+ok(/asr:\s*\{\s*enabled:\s*document\.getElementById\('asrEnabled'\)\.checked/.test(html), 'ASR 开关随 socialV2 配置保存');
 
 console.log('## JS 语法');
 const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
@@ -72,6 +75,7 @@ console.log('## fixture mock 覆盖');
 const fixture = fs.readFileSync(path.join(ROOT, 'scripts', 'console-ui-fixture.mjs'), 'utf8');
 ok(fixture.includes("case '/api/socialV2/voices'"), 'fixture mock 了 /api/socialV2/voices');
 ok(fixture.includes("case '/api/voice/send'"), 'fixture mock 了 /api/voice/send');
+ok(fixture.includes('asrStatus') && fixture.includes('ggml-small.bin'), 'fixture 提供 ASR 模型状态与默认路径');
 
 console.log(bad === 0 ? '\n全部通过' : `\n${bad} 项失败`);
 if (bad > 0) process.exit(1);

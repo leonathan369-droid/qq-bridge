@@ -318,7 +318,13 @@ export function makeFixtureState() {
       proactiveCheckMaxMs: 900000, proactiveProbability: 0.2,
     },
     socialStates: { 'group:123456789': { phase: 'active' }, 'group:100003': { phase: 'idle' } },
-    v2: { enabled: true, agentPreset: 'qq-chat-v2', provideRecommendations: true, tools: {} },
+    v2: {
+      enabled: true,
+      agentPreset: 'qq-chat-v2',
+      provideRecommendations: true,
+      tools: { getVoice: false },
+      asr: { enabled: false, modelPath: 'state/models/ggml-small.bin' }
+    },
     slangConfig: { enabled: true, extractMinMessages: 10, extractCooldownMs: 300000, inferenceThresholds: [2, 4, 8], injectMax: 8, learnerPreset: 'qq-chat', workspaceTitle: 'QQ 黑话学习', autoResearch: true },
     slang: [
       { id: 'demo-candidate', content: '有被治愈到', meaning: '感到温暖和安慰', status: 'candidate', count: 4, source: 'auto', evidence: [{ sender: '演示群友', text: '今天这张图，有被治愈到。' }], createdAt: timestamp, updatedAt: timestamp },
@@ -448,7 +454,11 @@ export async function startConsoleFixture({ port = 0, original = false, htmlPath
           case '/api/sessions': return json({ sessions: state.sessions });
           case '/api/pending': return json({ pending: [{ key: 'group:123456789', kind: 'approval', toolName: '演示工具', reason: '等待管理员确认（离线示例）' }] });
           case '/api/social': return json({ config: state.social, states: state.socialStates, pendingSummaries: { 'group:123456789': 2 } });
-          case '/api/socialV2/config': return json({ ok: true, config: state.v2 });
+          case '/api/socialV2/config': return json({
+            ok: true,
+            config: state.v2,
+            asrStatus: { ok: true, enabled: state.v2.asr?.enabled === true, modelPath: state.v2.asr?.modelPath || 'state/models/ggml-small.bin', reason: '' }
+          });
           case '/api/socialV2/activity': return json({ ok: true, paused: state.paused });
           case '/api/socialV2/tool-log': return json({ ok: true, entries: state.toolLog });
           case '/api/socialV2/feedback': return json({ ok: true, entries: state.feedback });

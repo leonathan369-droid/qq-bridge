@@ -154,6 +154,8 @@ console.log('## qq-bridge 语音系统：MCP 工具与开关映射');
   //      （桥接自己的 readJsonSafe 有去 BOM，所以生产路径不受影响，但脚本读法粗糙）。
   // 用户当前值只提示、不判定（见下）。
   ok(ex.socialV2?.tools?.sendVoice === false, 'config.example.json: tools.sendVoice=false（出厂默认关）');
+  ok(ex.socialV2?.tools?.getVoice === false, 'config.example.json: tools.getVoice=false（出厂默认关）');
+  ok(ex.socialV2?.asr?.enabled === false, 'config.example.json: ASR 默认关闭');
   ok(ex.socialV2?.voice?.enabled === false, 'config.example.json: voice.enabled=false（出厂默认关）');
   try {
     const local = JSON.parse(read('config.json').replace(/^\uFEFF/, ''));
@@ -199,6 +201,7 @@ console.log('## 文档');
   const readme = read('README.md');
   ok(readme.includes('voice-gui.mjs') && readme.includes('voice-cli.mjs'), 'README 含两个语音工具的入口说明');
   ok(/AI 发语音默认关闭/.test(readme), 'README 已知限制说明默认关闭');
+  ok(readme.includes('socialV2.asr.enabled') && readme.includes('whisper-cli'), 'README 说明收到语音的本机 ASR 开关');
   ok(read('docs/README.md').includes('FOLDER_MAP.md'), 'docs/README.md 索引链接到 FOLDER_MAP.md');
   ok(exists(path.join('docs', 'FOLDER_MAP.md')), 'docs/FOLDER_MAP.md 存在');
 }

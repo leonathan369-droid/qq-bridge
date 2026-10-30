@@ -148,7 +148,8 @@
       "stickerNote": true,
       "collectSticker": true,
       "getSelfImage": true,
-      "sendVoice": false
+      "sendVoice": false,
+      "getVoice": false
     },
     "wake": {
       "defaultMode": "diving",
@@ -237,6 +238,18 @@
       "loudness": "normal",
       "ffmpegPath": "",
       "autoReadback": true
+    },
+    "asr": {
+      "enabled": false,
+      "modelPath": "state/models/ggml-small.bin",
+      "binPath": "",
+      "ffmpegPath": "",
+      "language": "zh",
+      "maxSeconds": 60,
+      "timeoutMs": 10000,
+      "maxChars": 400,
+      "maxPerMinute": 6,
+      "eager": true
     },
     "proactive": {
       "enabled": true,
