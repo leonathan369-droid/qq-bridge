@@ -2387,20 +2387,26 @@ async function main() {
   async function ensureSlangLearnerSession() {
     const preset = resolvePresetName(cfg.slang?.learnerPreset || cfg.agentPreset, { strict: true });
     if (!preset) throw new Error('黑话学习缺少已验证的安全 preset，拒绝创建或复用会话');
-    const saved = readJsonSafe(SLANG_SESSION_FILE, null);
+    let saved = readJsonSafe(SLANG_SESSION_FILE, null);
     // 旧记录没有 preset 元数据，无法证明其权限，必须重新创建。
     if (saved?.preset !== preset) invalidateSlangLearnerSession();
     if (slangLearnerSessionId) {
       learnerSessions.add(slangLearnerSessionId);
       api.events.follow(slangLearnerSessionId);
-      return slangLearnerSessionId;
+      const applied = await ensureChatModel(slangLearnerSessionId, cfg.slang?.reasoningEffort || 'high');
+      if (applied !== 'not-found') return slangLearnerSessionId;
+      log(`黑话学习缓存会话已不存在，清除旧 id 并重建 (${slangLearnerSessionId})`);
+      invalidateSlangLearnerSession();
+      saved = null;
     }
     if (saved?.sessionId && saved.preset === preset) {
       slangLearnerSessionId = String(saved.sessionId);
       learnerSessions.add(slangLearnerSessionId);
       api.events.follow(slangLearnerSessionId);
-      await ensureChatModel(slangLearnerSessionId, cfg.slang?.reasoningEffort || 'high');
-      return slangLearnerSessionId;
+      const applied = await ensureChatModel(slangLearnerSessionId, cfg.slang?.reasoningEffort || 'high');
+      if (applied !== 'not-found') return slangLearnerSessionId;
+      log(`黑话学习磁盘缓存会话已不存在，清除旧 id 并重建 (${slangLearnerSessionId})`);
+      invalidateSlangLearnerSession();
     }
     const dir = path.join(STATE_DIR, 'slang-agent');
     fs.mkdirSync(dir, { recursive: true });
@@ -2471,6 +2477,46 @@ async function main() {
     const msg = String(error?.message ?? error);
     if (/超时|timeout/i.test(msg)) return false;
     return /会话|session|not found|404/i.test(msg);
+  }
+
+  function recoverSlangLearnerSessionFromStreamError(error) {
+    const message = [
+      typeof error === 'string' ? error : '',
+      error?.message,
+      error?.error?.message,
+      error?.code,
+      error?.error?.code
+    ].filter(Boolean).map(String).join(' ');
+    const code = String(error?.code ?? error?.error?.code ?? '');
+    const isNotFound = /session\/not-found|session[_ -]not[_ -]found/i.test(code)
+      || /session\s+["'][^"']+["']\s+not[- ]found/i.test(message)
+      || /session.{0,80}(?:not found|not-found|404)/i.test(message);
+    const reportedId = String(error?.sessionId ?? error?.error?.sessionId
+      ?? message.match(/session\s+["']([^"']+)["']\s+not[- ]found/i)?.[1] ?? '');
+    if (!isNotFound || !reportedId || reportedId !== slangLearnerSessionId) return null;
+
+    const staleId = reportedId;
+    const failure = new Error(`session "${staleId}" not found`);
+    const waiters = learnerWaiters.get(staleId) ?? [];
+    learnerWaiters.delete(staleId);
+    learnerCollectors.delete(staleId);
+    learnerBusySessions.delete(staleId);
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(failure);
+    }
+    invalidateSlangLearnerSession();
+    log(`黑话学习事件流确认旧 session 不存在，已清缓存并准备重建 (${staleId})`);
+    return queueSlangTask(async () => {
+      try {
+        const rebuiltId = await ensureSlangLearnerSession();
+        log(`黑话学习 session 已重建 (${staleId} -> ${rebuiltId})`);
+        return rebuiltId;
+      } catch (rebuildError) {
+        log('黑话学习 session 重建失败:', rebuildError?.message ?? rebuildError);
+        return null;
+      }
+    });
   }
 
   async function runSlangExtraction(key) {
@@ -12007,6 +12053,8 @@ async function main() {
             await sendToQQ(key, `🔐 agent 请求审批：${safeToolName}${reason}\n回复「通过」或「拒绝」`);
             await registerPending(key, { kind: 'approval', rpcId: envelope.rpcId, sessionId: frame.sessionId, clientId: frame.clientId, eventId: frame.eventId, toolName: frame.toolName });
           } else if (frame.type === 'stream/error') {
+            const slangRecovery = recoverSlangLearnerSessionFromStreamError(frame.error);
+            if (slangRecovery) void slangRecovery;
             log('事件流错误:', frame.error);
           }
         }

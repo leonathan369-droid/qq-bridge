@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { bridgeHarness } from './audit-bridge-harness.mjs';
 import http from 'node:http';
 
@@ -24,6 +26,19 @@ await test('unavailable preset catalogue fails closed for QQ and learner session
   await assert.rejects(h.ensureSession('group:456'));
   await assert.rejects(h.ensureSlangLearnerSession());
   assert.equal(h.calls.created.length, 0);
+});
+await test('session/not-found stream error clears and rebuilds the cached slang learner', async (h) => {
+  const staleId = await h.ensureSlangLearnerSession();
+  const cachePath = path.join(h.temp, 'state', 'slang-session.json');
+  assert.equal(JSON.parse(fs.readFileSync(cachePath, 'utf8')).sessionId, staleId);
+
+  const recovery = h.recoverSlangLearnerSessionFromStreamError(`session "${staleId}" not found`);
+  assert.ok(recovery, '匹配当前学习会话的 not-found 错误应触发恢复');
+  const rebuiltId = await recovery;
+  assert.ok(rebuiltId && rebuiltId !== staleId, '恢复应创建新 session id');
+  assert.equal(JSON.parse(fs.readFileSync(cachePath, 'utf8')).sessionId, rebuiltId, '磁盘缓存应替换为新 id');
+  assert.equal(h.calls.created.length, 2, '只创建一次新学习会话');
+  assert.ok(h.calls.follows.includes(rebuiltId), '事件流应跟随新学习会话');
 });
 await test('session creation crossing a mode change never accepts stale permissions', async (h) => {
   h.setMode('closed-agent');
