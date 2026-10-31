@@ -12,10 +12,139 @@ const modelPath = path.join(root, 'state', 'models', 'ggml-small.bin');
 const asr = await import('../src/asr.js').catch(() => null);
 assert.equal(typeof asr?.resolveAsrConfig, 'function', 'src/asr.js 应导出 resolveAsrConfig');
 assert.equal(typeof asr?.transcribeAudio, 'function', 'src/asr.js 应导出 transcribeAudio');
+assert.equal(typeof asr?.looksLikeDegenerateRepeat, 'function', 'src/asr.js 应导出循环重复判定函数');
 
 const tools = asr.resolveAsrConfig({});
 assert.equal(tools.enabled, false, 'ASR 默认关闭');
 assert.equal(tools.modelPath, 'state/models/ggml-small.bin', '默认模型路径可配置且指向 small');
+assert.equal(tools.maxPerMinute, 6, '生产默认仍限制每分钟最多 6 次识别');
+
+function createFakeAsrRunner(transcripts) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-asr-runner-'));
+  const modelPath = path.join(dir, 'model.bin');
+  const ffmpegPath = path.join(dir, 'ffmpeg');
+  const whisperPath = path.join(dir, 'whisper-cli');
+  fs.writeFileSync(modelPath, 'fixture model');
+  for (const executable of [ffmpegPath, whisperPath]) {
+    fs.writeFileSync(executable, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    fs.chmodSync(executable, 0o700);
+  }
+  const calls = [];
+  const logs = [];
+  const runner = async (command, args, timeoutMs) => {
+    calls.push({ command, args: [...args], timeoutMs });
+    if (command === ffmpegPath) return { code: 0, error: null, stdout: '', stderr: '', timedOut: false };
+    if (command !== whisperPath) throw new Error(`unexpected command: ${command}`);
+    const transcript = transcripts[calls.filter((call) => call.command === whisperPath).length - 1];
+    return { code: 0, error: null, stdout: transcript ?? '', stderr: '', timedOut: false };
+  };
+  return {
+    dir,
+    calls,
+    logs,
+    runner,
+    config: {
+      enabled: true,
+      modelPath,
+      binPath: whisperPath,
+      ffmpegPath,
+      maxSeconds: 60,
+      timeoutMs: 3000,
+      maxChars: 400,
+      maxPerMinute: 20,
+      tmpDir: path.join(dir, 'tmp')
+    },
+    close() { fs.rmSync(dir, { recursive: true, force: true }); }
+  };
+}
+
+console.log('## 循环幻觉判定');
+assert.equal(asr.looksLikeDegenerateRepeat('鲸鲸鲸鲸鲸'), true, '同一昵称连续重复五次应判为退化');
+assert.equal(asr.looksLikeDegenerateRepeat('今天吃什么'), false, '正常短句不应判为退化');
+assert.equal(asr.looksLikeDegenerateRepeat('哈哈哈哈'), false, '两次“哈哈”不应被单字周期误判');
+
+console.log('## 循环幻觉二次转写');
+{
+  const fixture = createFakeAsrRunner(['鲸鲸鲸鲸鲸', '你能听到我发语音了？']);
+  try {
+    const result = await asr.transcribeAudio(Buffer.from('fixture loop recovery'), {
+      format: 'wav', duration: 2, config: fixture.config, runner: fixture.runner,
+      logger: (line) => fixture.logs.push(line)
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.text, '你能听到我发语音了？', '非退化二轮结果应替换首轮循环幻觉');
+    assert.equal(result.retry, 'loop', '结果应记录发生了循环兜底');
+    const passes = fixture.calls.filter((call) => call.command === fixture.config.binPath);
+    assert.equal(passes.length, 2, '退化首轮应调用 whisper 两次');
+    assert.ok(passes[0].args.includes('--prompt'), '首轮保留昵称词表提示');
+    assert.equal(passes[0].args[passes[0].args.indexOf('--prompt') + 1], '群友昵称：鲸鲸', '首轮继续使用原昵称词表提示');
+    assert.equal(passes[1].args.includes('--prompt'), false, '二轮必须移除昵称词表提示');
+    for (const pass of passes) {
+      assert.ok(pass.args.includes('--suppress-nst'), '每轮都抑制非语音 token');
+      assert.equal(pass.args.includes('--temperature'), false, '保持 whisper 默认温度');
+    }
+    assert.equal(passes[0].args.includes('-mc'), false, '为保住昵称提示，首轮使用默认上下文');
+    const retryMc = passes[1].args.indexOf('-mc');
+    assert.ok(retryMc >= 0 && passes[1].args[retryMc + 1] === '0', '无提示的恢复轮使用 -mc 0');
+    assert.ok(passes[1].timeoutMs <= passes[0].timeoutMs, '二轮只能使用剩余总超时预算');
+    assert.ok(result.ms <= fixture.config.timeoutMs, '两轮总耗时不得超过单条超时预算');
+    assert.ok(fixture.logs.some((line) => line.includes('retry=loop')), '重试日志应包含 retry=loop 元信息');
+    assert.ok(fixture.logs.every((line) => !line.includes('鲸鲸') && !line.includes('你能听到')), '重试日志不得包含转写正文');
+  } finally {
+    fixture.close();
+  }
+}
+
+{
+  const fixture = createFakeAsrRunner(['鲸鲸鲸鲸鲸', '京京京京京']);
+  try {
+    const result = await asr.transcribeAudio(Buffer.from('fixture preserve first'), {
+      format: 'wav', duration: 2, config: fixture.config, runner: fixture.runner
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.text, '鲸鲸鲸鲸鲸', '二轮仍退化时保留首轮，避免真实重复被提示词带偏');
+    assert.equal(fixture.calls.filter((call) => call.command === fixture.config.binPath).length, 2);
+  } finally {
+    fixture.close();
+  }
+}
+
+{
+  const fixture = createFakeAsrRunner(['今天吃什么']);
+  try {
+    const result = await asr.transcribeAudio(Buffer.from('fixture normal first'), {
+      format: 'wav', duration: 2, config: fixture.config, runner: fixture.runner
+    });
+    assert.equal(result.text, '今天吃什么');
+    assert.equal(result.retry, undefined);
+    assert.equal(fixture.calls.filter((call) => call.command === fixture.config.binPath).length, 1, '正常首轮只调用一次');
+  } finally {
+    fixture.close();
+  }
+}
+
+console.log('## 繁体归一和短音频保护');
+{
+  const fixture = createFakeAsrRunner(['是誰啊\n我看到沒有抓你了\n幹嘛 龘']);
+  try {
+    const result = await asr.transcribeAudio(Buffer.from('fixture traditional'), {
+      format: 'wav', duration: 2, config: fixture.config, runner: fixture.runner
+    });
+    assert.equal(result.text, '是谁啊 我看到没有抓你了 干嘛 龘', '常见繁体转简体，表外字符原样保留');
+  } finally {
+    fixture.close();
+  }
+
+  let runnerCalls = 0;
+  const short = await asr.transcribeAudio(Buffer.from('short fixture'), {
+    duration: 0.39,
+    config: { enabled: true },
+    runner: async () => { runnerCalls += 1; throw new Error('short audio must not launch tools'); }
+  });
+  assert.equal(short.ok, false);
+  assert.equal(short.reason, '未识别');
+  assert.equal(runnerCalls, 0, '不足 0.4 秒直接返回，不运行 ffmpeg/whisper');
+}
 
 console.log('## 桥接配置默认关闭');
 {
@@ -192,7 +321,7 @@ console.log('## 缺少模型或程序时安全降级');
   assert.equal(missingModel.ok, false, '缺少模型时返回 ok=false');
 }
 
-const config = asr.resolveAsrConfig({ enabled: true });
+const config = asr.resolveAsrConfig({ enabled: true, maxPerMinute: 30 });
 if (!config.ok) {
   console.log(`SKIP 本机 ASR 实测：${config.reason}`);
 } else if (!fs.existsSync(modelPath)) {
@@ -226,6 +355,32 @@ if (!config.ok) {
     assert.ok(unrelated.text.includes('小明') && !unrelated.text.includes('鲸鲸'), `词汇提示不应篡改普通昵称，实际为「${unrelated.text}」`);
     console.log(`PASS 普通昵称未被词汇提示带偏：${unrelated.text}`);
 
+    console.log('## 指定语句与昵称真实语音回归');
+    async function sayAndTranscribe(name, phrase) {
+      const aiffPath = path.join(temp, `${name}.aiff`);
+      const wavPath = path.join(temp, `${name}.wav`);
+      const spoken = spawnSync('/usr/bin/say', ['-v', 'Tingting (中文（中国大陆）)', '-o', aiffPath, phrase], { encoding: 'utf8' });
+      assert.equal(spoken.status, 0, `say 合成「${phrase}」失败：${spoken.stderr || spoken.error || spoken.status}`);
+      const converted = spawnSync(config.ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', '-i', aiffPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath], { encoding: 'utf8' });
+      assert.equal(converted.status, 0, `ffmpeg 转换「${phrase}」失败：${converted.stderr || converted.error || converted.status}`);
+      const probed = spawnSync(config.ffprobePath, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', wavPath], { encoding: 'utf8' });
+      const duration = Number(String(probed.stdout ?? '').trim());
+      assert.equal(probed.status, 0, `ffprobe 读取「${phrase}」时长失败：${probed.stderr || probed.error || probed.status}`);
+      assert.ok(Number.isFinite(duration) && duration > 0, `「${phrase}」时长无效`);
+      return asr.transcribeAudio(fs.readFileSync(wavPath), {
+        format: 'wav', duration, config: { ...config, tmpDir: path.join(temp, 'asr') }
+      });
+    }
+    const question = await sayAndTranscribe('voice-question', '你能听到我发语音了？');
+    assert.equal(question.ok, true, `语音问句转写失败：${question.reason || '未知原因'}`);
+    assert.ok(question.text.includes('听') || question.text.includes('语音'), `问句转写应保留「听」或「语音」，实际为「${question.text}」`);
+    console.log(`PASS 你能听到我发语音了？ -> ${question.text} (${(question.ms / 1000).toFixed(2)}s)`);
+
+    const nickname = await sayAndTranscribe('voice-nickname', '鲸鲸');
+    assert.equal(nickname.ok, true, `单说昵称转写失败：${nickname.reason || '未知原因'}`);
+    assert.ok(nickname.text.includes('鲸'), `单说昵称应识别出「鲸」，实际为「${nickname.text}」`);
+    console.log(`PASS 鲸鲸 -> ${nickname.text} (${(nickname.ms / 1000).toFixed(2)}s)`);
+
     console.log('## 超长音频截断保护');
     const longWav = path.join(temp, 'long.wav');
     const longVoice = spawnSync(config.ffmpegPath, ['-hide_banner', '-loglevel', 'error', '-y', '-stream_loop', '-1', '-i', wav, '-t', '61', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', longWav], { encoding: 'utf8' });
@@ -249,7 +404,7 @@ if (!config.ok) {
     assert.equal(cacheAudio.status, 0, `ffmpeg 生成缓存测试音频失败：${cacheAudio.stderr || cacheAudio.error || cacheAudio.status}`);
     fs.writeFileSync(statePath, JSON.stringify({ calls: 0 }));
     const fakeWhisper = path.join(temp, 'fake-whisper.mjs');
-    fs.writeFileSync(fakeWhisper, `#!/usr/bin/env node\nimport fs from 'node:fs';\nconst statePath = ${JSON.stringify(statePath)};\nconst activePath = ${JSON.stringify(activePath)};\nconst overlapPath = ${JSON.stringify(overlapPath)};\nconst state = JSON.parse(fs.readFileSync(statePath, 'utf8'));\nstate.calls += 1;\nfs.writeFileSync(statePath, JSON.stringify(state));\nlet active;\ntry { active = fs.openSync(activePath, 'wx'); } catch { fs.writeFileSync(overlapPath, 'overlap'); }\nawait new Promise((resolve) => setTimeout(resolve, 250));\nif (active !== undefined) { fs.closeSync(active); fs.unlinkSync(activePath); }\nconsole.log('鲸'.repeat(450));\n`, { mode: 0o755 });
+    fs.writeFileSync(fakeWhisper, `#!/usr/bin/env node\nimport fs from 'node:fs';\nconst statePath = ${JSON.stringify(statePath)};\nconst activePath = ${JSON.stringify(activePath)};\nconst overlapPath = ${JSON.stringify(overlapPath)};\nconst state = JSON.parse(fs.readFileSync(statePath, 'utf8'));\nstate.calls += 1;\nfs.writeFileSync(statePath, JSON.stringify(state));\nlet active;\ntry { active = fs.openSync(activePath, 'wx'); } catch { fs.writeFileSync(overlapPath, 'overlap'); }\nawait new Promise((resolve) => setTimeout(resolve, 250));\nif (active !== undefined) { fs.closeSync(active); fs.unlinkSync(activePath); }\nconsole.log(Array.from({ length: 450 }, (_, index) => String.fromCharCode(0x4e00 + index)).join(''));\n`, { mode: 0o755 });
     const cachedConfig = { ...config, binPath: fakeWhisper, tmpDir: path.join(temp, 'serial-asr') };
     const serialStarted = Date.now();
     const results = await Promise.all([1, 2, 3].map(() => asr.transcribeAudio(fs.readFileSync(cacheWav), { format: 'wav', config: cachedConfig })));
